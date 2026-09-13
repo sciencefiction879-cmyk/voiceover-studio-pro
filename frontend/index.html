@@ -1,0 +1,1036 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Voiceover Studio Pro v0.2 — Two-Mode Caption &amp; Audio DSP Studio</title>
+  <meta name="description" content="Bulk DSP audio processing with two-mode forced alignment caption system, smart 25m+ cut engine, and audio variation.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Top Navigation Header -->
+    <header class="app-header">
+      <div class="brand-group">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            <line x1="12" y1="19" x2="12" y2="22"/>
+            <line x1="8" y1="22" x2="16" y2="22"/>
+          </svg>
+        </div>
+        <div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <h1 class="brand-title">Voiceover Studio Pro</h1>
+            <span class="version-tag">v0.2</span>
+          </div>
+          <p class="brand-subtitle">Mode 1 (Process + Cut + SRT) &bull; Mode 2 (Alignment Only) &bull; Forced Alignment &bull; 25m+ Cuts &bull; Gemini AI</p>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <div class="system-status-pills">
+          <div class="status-pill" id="ffmpegStatusPill">
+            <span class="pill-dot ok"></span>
+            <span class="pill-text">FFmpeg Ready</span>
+          </div>
+          <div class="status-pill gemini-idle" id="geminiHeaderBadge" title="Click to manage Gemini API keys & model">
+            <span class="pill-dot"></span>
+            <span class="pill-text">Gemini AI (Optional)</span>
+          </div>
+        </div>
+
+        <button id="btnOpenGeminiModal" class="btn btn-sm btn-ai-glow" title="Configure Gemini API Keys & Google AI Studio Models">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+          ✨ Gemini AI
+        </button>
+
+        <div class="preset-selector-group">
+          <label for="presetSelect">Preset:</label>
+          <select id="presetSelect" class="studio-select">
+            <option value="podcast">Clean Podcast & Narration</option>
+            <option value="broadcast" selected>Warm Broadcast Master</option>
+            <option value="dynamic">Dynamic Punch Voice</option>
+            <option value="subtle">Subtle Variations Only</option>
+            <option value="custom">Custom / AI Configuration</option>
+          </select>
+          <button id="btnGeminiSuggestQuick" class="btn btn-xs btn-ai-suggest" title="Analyze active voiceover and suggest optimal anti-copyright settings">
+            ✨ AI Suggest
+          </button>
+        </div>
+      </div>
+
+    </header>
+
+    <!-- Main 3-Column Studio Layout -->
+    <main class="studio-main">
+      
+      <!-- LEFT COLUMN: Source Files & Batch Queue -->
+      <section class="panel panel-files">
+        <div class="panel-header">
+          <div class="panel-title-wrap">
+            <svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+            <h2>Voiceover Files</h2>
+          </div>
+          <span class="badge" id="fileCountBadge">0 Files</span>
+        </div>
+
+        <!-- Folder Selection Controls -->
+        <div class="folder-input-card">
+          <label class="section-label">Source Folder Path (macOS)</label>
+          <div class="input-with-action">
+            <input type="text" id="sourceFolderPath" class="studio-input" placeholder="/Users/username/Voiceovers/V_files">
+            <button id="btnBrowseSource" class="btn btn-secondary" title="Open native macOS folder picker">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              Browse
+            </button>
+            <button id="btnScanFolder" class="btn btn-primary" title="Scan folder">Scan</button>
+          </div>
+
+          <div class="divider-text"><span>OR DRAG &amp; DROP / SELECT IN BROWSER</span></div>
+
+          <div class="dropzone" id="fileDropzone">
+            <input type="file" id="browserFileInput" multiple webkitdirectory directory hidden>
+            <input type="file" id="browserFilesOnlyInput" multiple accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.txt,.docx,.srt" hidden>
+            <div class="dropzone-content">
+              <svg class="upload-cloud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/>
+                <path d="M12 12v9"/>
+                <path d="m8 16 4-4 4 4"/>
+              </svg>
+              <p class="dropzone-text">Drop voiceovers &amp; scripts (V1.mp3, V1.txt, V1.docx, V1.srt...)</p>
+              <div style="display:flex; gap:8px; justify-content:center; margin-top:4px;">
+                <button id="btnUploadFolder" class="btn btn-xs btn-glass">Choose Folder</button>
+                <button id="btnUploadFilesOnly" class="btn btn-xs btn-glass">Choose Files</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- File List Queue with Natural Sequence -->
+        <div class="file-queue-header">
+          <span>Sequenced Queue (V1 &rarr; Vn)</span>
+          <span id="queueTotalDuration">Total: 00:00</span>
+        </div>
+
+        <div class="file-list-container" id="fileListContainer">
+          <div class="empty-state">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="8" x2="12" y2="12"/>
+              <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            <p>No voiceovers loaded yet.</p>
+            <small>Select or drop a folder containing V1.mp3, V2.mp3...</small>
+          </div>
+        </div>
+      </section>
+
+      <!-- MIDDLE COLUMN: Audio DSP Variations & Cutting Logic -->
+      <section class="panel panel-dsp">
+        <div class="panel-header">
+          <div class="panel-title-wrap">
+            <svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="4" y1="21" x2="4" y2="14"/>
+              <line x1="4" y1="10" x2="4" y2="3"/>
+              <line x1="12" y1="21" x2="12" y2="12"/>
+              <line x1="12" y1="8" x2="12" y2="3"/>
+              <line x1="20" y1="21" x2="20" y2="16"/>
+              <line x1="20" y1="12" x2="20" y2="3"/>
+              <line x1="1" y1="14" x2="7" y2="14"/>
+              <line x1="9" y1="8" x2="15" y2="8"/>
+              <line x1="17" y1="16" x2="23" y2="16"/>
+            </svg>
+            <div>
+              <h2 id="dspPanelTitle">Audio DSP &amp; Cut Engine</h2>
+              <div class="master-v1-tag" id="masterV1Tag">👑 Master Reference: <strong id="masterFileName">V1</strong></div>
+            </div>
+          </div>
+          <div class="master-quick-actions" id="masterQuickActions">
+            <button id="btnRandomizeAll" class="btn btn-sm btn-randomize-master" title="Randomize all audio characteristics within 3%–7% modification range">
+              🎲 RANDOMIZE ALL (3%–7%)
+            </button>
+            <button id="btnResetMaster" class="btn btn-sm btn-secondary" title="Restore original studio defaults">
+              ↺ RESET
+            </button>
+            <button id="btnApplyToAll" class="btn btn-sm btn-apply-master" title="Lock &amp; Propagate V1 settings to all other versions (V2, V3...)">
+              ✓ APPLY TO ALL
+            </button>
+          </div>
+        </div>
+
+        <!-- CAPTION SYSTEM TWO-MODE SELECTOR -->
+        <div class="caption-mode-card">
+          <div class="caption-mode-header">
+            <span class="mode-title-badge">CAPTION &amp; AUDIO PIPELINE MODE</span>
+            <span class="mode-active-indicator" id="modeActiveIndicator">Mode 1 Active: Audio Processing + Cut-Sync SRT</span>
+          </div>
+          <div class="caption-mode-selector-grid">
+            <div class="mode-select-option active" id="optionMode1" data-mode="mode1">
+              <div class="mode-radio-row">
+                <input type="radio" name="caption_system_mode" id="radioMode1" value="mode1" checked>
+                <label for="radioMode1" class="mode-label">
+                  <span class="mode-pill-badge">MODE 1</span>
+                  <strong>Process Audio + Cut-Synchronized SRT</strong>
+                </label>
+              </div>
+              <p class="mode-desc">Audio + Script &rarr; Forced Alignment &rarr; Audio Cuts &rarr; Caption Cut Sync &rarr; Final MP3 + SRT</p>
+              <div class="mode-outputs-tag">Outputs: Processed MP3 + Cut-Synced SRT (V1.mp3, V1.srt)</div>
+            </div>
+
+            <div class="mode-select-option" id="optionMode2" data-mode="mode2">
+              <div class="mode-radio-row">
+                <input type="radio" name="caption_system_mode" id="radioMode2" value="mode2">
+                <label for="radioMode2" class="mode-label">
+                  <span class="mode-pill-badge mode-pill-cyan">MODE 2</span>
+                  <strong>Alignment Only (SRT Only)</strong>
+                </label>
+              </div>
+              <p class="mode-desc">Audio + Script &rarr; Forced Alignment &rarr; SRT Only (Zero cuts, untouched MP3)</p>
+              <div class="mode-outputs-tag text-cyan">Outputs: SRT Only (V1.srt, V2.srt)</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Mode 2 Active Floating Notice Banner -->
+        <div class="mode2-notice-banner" id="mode2NoticeBanner" style="display: none;">
+          <div class="rule-icon-box">🛡️</div>
+          <div class="rule-text-box">
+            <h4>Mode 2 Active — Forced Alignment Only</h4>
+            <p>Audio is <strong>100% untouched</strong>. No audio cuts or DSP filters will be applied. Only the synchronized SRT subtitle will be produced based on original speech timing.</p>
+          </div>
+        </div>
+
+        <!-- MODE 2 ONLY: FORCED ALIGNMENT & SUBTITLE STUDIO -->
+        <div id="mode2StudioContainer" class="mode2-studio-container" style="display: none;">
+          <div class="rule-banner" style="border-color: #06b6d4; background: rgba(6, 182, 212, 0.08);">
+            <div class="rule-icon-box">🎙️</div>
+            <div class="rule-text-box">
+              <h4>Mode 2: Acoustic Forced Alignment Only</h4>
+              <p>Speech is aligned directly against the voice-over timeline using SIMD audio energy matching. <strong>Audio is 100% untouched</strong>: zero cuts, no EQ, no speed/pitch shift, no audio re-encoding.</p>
+            </div>
+          </div>
+
+          <div class="mode2-status-grid">
+            <div class="mode2-status-card">
+              <span class="m2-lbl">Alignment Engine</span>
+              <span class="m2-val text-cyan">⚡ SIMD Phonetic VAD</span>
+            </div>
+            <div class="mode2-status-card">
+              <span class="m2-lbl">Audio Modification</span>
+              <span class="m2-val text-success">🛡️ 0.00% (Pure Untouched)</span>
+            </div>
+            <div class="mode2-status-card">
+              <span class="m2-lbl">Supported Scripts</span>
+              <span class="m2-val">📄 .docx, .txt, .srt</span>
+            </div>
+            <div class="mode2-status-card">
+              <span class="m2-lbl">Final Output</span>
+              <span class="m2-val text-amber">📝 V1.srt, V2.srt...</span>
+            </div>
+          </div>
+
+          <div class="control-card">
+            <div class="control-header">
+              <span class="control-title">Subtitle Formatting Rules (Automatic)</span>
+              <span class="param-status-badge text-cyan">Active</span>
+            </div>
+            <div class="mode2-rules-list">
+              <div class="m2-rule-item">
+                <span class="m2-rule-dot">●</span>
+                <span><strong>Line Splitting:</strong> Sentences automatically segment into human-readable subtitle cues (Max 38 characters/line).</span>
+              </div>
+              <div class="m2-rule-item">
+                <span class="m2-rule-dot">●</span>
+                <span><strong>Speech Pause Snapping:</strong> Natural breath pauses (&gt;0.25s) trigger cue boundaries.</span>
+              </div>
+              <div class="m2-rule-item">
+                <span class="m2-rule-dot">●</span>
+                <span><strong>Zero Cut Offset:</strong> SRT timestamps match the original voice-over down to the exact millisecond.</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="control-card">
+            <div class="control-header">
+              <span class="control-title">Mode 2 Alignment Checklist</span>
+            </div>
+            <div class="mode2-checklist">
+              <div class="checklist-row"><span class="check-icon">✓</span> <span>1. Upload original voiceover files (<code>V1.mp3</code>, <code>V2.mp3</code>...)</span></div>
+              <div class="checklist-row"><span class="check-icon">✓</span> <span>2. Provide matching scripts (<code>V1.docx</code>, <code>V1.txt</code>, or <code>V1.srt</code>)</span></div>
+              <div class="checklist-row"><span class="check-icon">✓</span> <span>3. Click <strong>"Generate Synced SRTs"</strong> to align and validate</span></div>
+              <div class="checklist-row"><span class="check-icon">✓</span> <span>4. Download <code>V1.srt</code>, <code>V2.srt</code> or Captions ZIP</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- MODE 1 ONLY: AUDIO DSP & CUT ENGINE CONTROLS -->
+        <div id="mode1ControlsContainer">
+          <div class="dsp-tabs-nav" id="dspTabsNav">
+            <button class="dsp-tab-btn active" data-tab="cutting">1. Smart Cutting (25m+)</button>
+            <button class="dsp-tab-btn" data-tab="pitch-speed">2. Pitch &amp; Speed</button>
+            <button class="dsp-tab-btn" data-tab="eq-tone">3. EQ &amp; Tone</button>
+            <button class="dsp-tab-btn" data-tab="dynamics">4. Dynamics &amp; Cleanup</button>
+          </div>
+
+        <div class="dsp-scroll-body">
+          
+          <!-- TAB 1: Smart Cutting Engine -->
+          <div class="dsp-tab-content active" id="tab-cutting">
+            <div class="rule-banner">
+              <div class="rule-icon-box">🛡️</div>
+              <div class="rule-text-box">
+                <h4>Protected First 25 Minutes (0:00 – 25:00)</h4>
+                <p>Zero cuts during first 25 minutes. All audio variations apply across the entire file seamlessly.</p>
+              </div>
+            </div>
+
+            <div class="rule-banner amber">
+              <div class="rule-icon-box">✂️</div>
+              <div class="rule-text-box">
+                <h4>Post-25m Interval Cuts (25–30, 30–35, 35–40m...)</h4>
+                <p>Adds ~1-minute cuts at random positions within every 5-minute block for the remaining audio duration, with smooth 40ms micro-crossfades.</p>
+              </div>
+            </div>
+
+            <div class="control-card">
+              <div class="control-header">
+                <span class="control-title">Cut Duration Range per 5-Min Block</span>
+                <span class="control-val" id="cutDurationVal">50s – 70s</span>
+              </div>
+              <div class="dual-range-group">
+                <div class="range-field">
+                  <label>Min (seconds):</label>
+                  <input type="range" id="cut_duration_min" min="30" max="90" value="50" step="1">
+                  <span class="num-tag" id="cut_duration_min_label">50s</span>
+                </div>
+                <div class="range-field">
+                  <label>Max (seconds):</label>
+                  <input type="range" id="cut_duration_max" min="40" max="120" value="70" step="1">
+                  <span class="num-tag" id="cut_duration_max_label">70s</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="control-card">
+              <div class="control-header">
+                <span class="control-title">Randomization Seed (Optional Reproducibility)</span>
+              </div>
+              <div class="seed-input-row">
+                <input type="number" id="randomSeedInput" class="studio-input" placeholder="Leave empty for dynamic randomness">
+                <button id="btnNewSeed" class="btn btn-sm btn-secondary">New Seed</button>
+              </div>
+            </div>
+
+            <!-- Auto-Variation Info Banner -->
+            <div class="rule-banner" style="border-color: var(--accent-violet); background: rgba(139,92,246,0.07);">
+              <div class="rule-icon-box">🎛️</div>
+              <div class="rule-text-box">
+                <h4>Intelligent 1–5% Auto-Variation (Per File)</h4>
+                <p>Each processed file automatically receives unique micro-variations on all DSP parameters (speed, pitch, EQ, compression, loudness, limiter) within the 1–5% range for maximum audio uniqueness and quality.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- TAB 2: Pitch, Speed, Volume -->
+          <div class="dsp-tab-content" id="tab-pitch-speed">
+            <div class="control-card">
+              <div class="control-header">
+                <div class="control-title-row">
+                  <span class="control-title">Pitch Shift</span>
+                  <span class="param-status-badge" id="badge_pitch_semitones">Default</span>
+                </div>
+                <div class="control-val-actions">
+                  <span class="control-val" id="pitchVal">0.00 st</span>
+                  <button class="btn-dice" data-param="pitch_semitones" title="Randomize only Pitch (3%–7%)">🎲</button>
+                </div>
+              </div>
+              <p class="control-hint">Tempo-compensated pitch variation for natural vocal variety.</p>
+              <div class="slider-with-tags">
+                <input type="range" id="pitch_semitones" min="-3.0" max="3.0" value="0.0" step="0.05">
+                <div class="slider-endpoints">
+                  <span>-3.0 st</span>
+                  <span class="num-tag" id="pitch_semitones_label">0.00 st</span>
+                  <span>+3.0 st</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="control-card">
+              <div class="control-header">
+                <div class="control-title-row">
+                  <span class="control-title">Speed / Tempo Shift</span>
+                  <span class="param-status-badge" id="badge_speed_factor">Default</span>
+                </div>
+                <div class="control-val-actions">
+                  <span class="control-val" id="speedVal">1.000x</span>
+                  <button class="btn-dice" data-param="speed_factor" title="Randomize only Speed (3%–7%)">🎲</button>
+                </div>
+              </div>
+              <p class="control-hint">High-fidelity pitch-preserving time stretch.</p>
+              <div class="slider-with-tags">
+                <input type="range" id="speed_factor" min="0.85" max="1.25" value="1.0" step="0.005">
+                <div class="slider-endpoints">
+                  <span>0.85x</span>
+                  <span class="num-tag" id="speed_factor_label">1.000x</span>
+                  <span>1.25x</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="control-card">
+              <div class="control-header">
+                <div class="control-title-row">
+                  <span class="control-title">Volume / Master Gain</span>
+                  <span class="param-status-badge" id="badge_volume_db">Default</span>
+                </div>
+                <div class="control-val-actions">
+                  <span class="control-val" id="volumeVal">0.00 dB</span>
+                  <button class="btn-dice" data-param="volume_db" title="Randomize only Volume (3%–7%)">🎲</button>
+                </div>
+              </div>
+              <div class="slider-with-tags">
+                <input type="range" id="volume_db" min="-6.0" max="6.0" value="0.0" step="0.1">
+                <div class="slider-endpoints">
+                  <span>-6.0 dB</span>
+                  <span class="num-tag" id="volume_db_label">0.00 dB</span>
+                  <span>+6.0 dB</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- TAB 3: EQ & Tone Sculpting -->
+          <div class="dsp-tab-content" id="tab-eq-tone">
+            <div class="control-card">
+              <div class="control-header">
+                <div class="control-title-row">
+                  <span class="control-title">Low-Cut / Rumble Highpass Filter</span>
+                  <span class="param-status-badge" id="badge_highpass_freq">Default</span>
+                </div>
+                <div class="control-val-actions">
+                  <span class="control-val" id="highpassVal">75.0 Hz</span>
+                  <button class="btn-dice" data-param="highpass_freq" title="Randomize only Highpass (3%–7%)">🎲</button>
+                </div>
+              </div>
+              <div class="slider-with-tags">
+                <input type="range" id="highpass_freq" min="20" max="150" value="75" step="1">
+                <div class="slider-endpoints">
+                  <span>20 Hz</span>
+                  <span class="num-tag" id="highpass_freq_label">75.0 Hz</span>
+                  <span>150 Hz</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="control-card">
+              <div class="control-header">
+                <div class="control-title-row">
+                  <span class="control-title">Bass Warmth (180 Hz)</span>
+                  <span class="param-status-badge" id="badge_bass_gain">Default</span>
+                </div>
+                <div class="control-val-actions">
+                  <span class="control-val" id="bassVal">0.00 dB</span>
+                  <button class="btn-dice" data-param="bass_gain" title="Randomize only Bass (3%–7%)">🎲</button>
+                </div>
+              </div>
+              <div class="slider-with-tags">
+                <input type="range" id="bass_gain" min="-6.0" max="6.0" value="0.0" step="0.1">
+                <div class="slider-endpoints">
+                  <span>-6.0 dB</span>
+                  <span class="num-tag" id="bass_gain_label">0.00 dB</span>
+                  <span>+6.0 dB</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="control-card">
+              <div class="control-header">
+                <div class="control-title-row">
+                  <span class="control-title">Presence &amp; Intelligibility (3.2 kHz)</span>
+                  <span class="param-status-badge" id="badge_mid_gain">Default</span>
+                </div>
+                <div class="control-val-actions">
+                  <span class="control-val" id="midVal">0.00 dB</span>
+                  <button class="btn-dice" data-param="mid_gain" title="Randomize only Presence (3%–7%)">🎲</button>
+                </div>
+              </div>
+              <div class="slider-with-tags">
+                <input type="range" id="mid_gain" min="-5.0" max="6.0" value="0.0" step="0.1">
+                <div class="slider-endpoints">
+                  <span>-5.0 dB</span>
+                  <span class="num-tag" id="mid_gain_label">0.00 dB</span>
+                  <span>+6.0 dB</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="control-card">
+              <div class="control-header">
+                <div class="control-title-row">
+                  <span class="control-title">Treble &amp; Air Sheen (11 kHz)</span>
+                  <span class="param-status-badge" id="badge_treble_gain">Default</span>
+                </div>
+                <div class="control-val-actions">
+                  <span class="control-val" id="trebleVal">0.00 dB</span>
+                  <button class="btn-dice" data-param="treble_gain" title="Randomize only Treble (3%–7%)">🎲</button>
+                </div>
+              </div>
+              <div class="slider-with-tags">
+                <input type="range" id="treble_gain" min="-5.0" max="6.0" value="0.0" step="0.1">
+                <div class="slider-endpoints">
+                  <span>-5.0 dB</span>
+                  <span class="num-tag" id="treble_gain_label">0.00 dB</span>
+                  <span>+6.0 dB</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="control-card">
+              <div class="control-header">
+                <div class="control-title-row">
+                  <span class="control-title">Lowpass Smoothing Filter</span>
+                  <span class="param-status-badge" id="badge_lowpass_freq">Default</span>
+                </div>
+                <div class="control-val-actions">
+                  <span class="control-val" id="lowpassVal">18500 Hz</span>
+                  <button class="btn-dice" data-param="lowpass_freq" title="Randomize only Lowpass (3%–7%)">🎲</button>
+                </div>
+              </div>
+              <div class="slider-with-tags">
+                <input type="range" id="lowpass_freq" min="14000" max="20000" value="18500" step="100">
+                <div class="slider-endpoints">
+                  <span>14 kHz</span>
+                  <span class="num-tag" id="lowpass_freq_label">18500 Hz</span>
+                  <span>20 kHz</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- TAB 4: Dynamics, De-Essing, Noise Cleanup & Limiter -->
+          <div class="dsp-tab-content" id="tab-dynamics">
+            <!-- Noise-floor Cleanup -->
+            <div class="control-card toggleable">
+              <div class="control-header">
+                <label class="switch-label">
+                  <input type="checkbox" id="denoise_enabled" checked>
+                  <span class="switch-slider"></span>
+                  <span class="control-title">Spectral Noise-Floor Cleanup</span>
+                </label>
+                <div class="control-val-actions">
+                  <span class="param-status-badge" id="badge_denoise_floor">Default</span>
+                  <span class="control-val" id="denoiseVal">-38.0 dB</span>
+                  <button class="btn-dice" data-param="denoise_floor" title="Randomize only Denoise (3%–7%)">🎲</button>
+                </div>
+              </div>
+              <div class="slider-with-tags">
+                <input type="range" id="denoise_floor" min="-55" max="-25" value="-38" step="1">
+                <div class="slider-endpoints">
+                  <span>-55 dB</span>
+                  <span class="num-tag" id="denoise_floor_label">-38.0 dB</span>
+                  <span>-25 dB</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- De-Essing -->
+            <div class="control-card toggleable">
+              <div class="control-header">
+                <label class="switch-label">
+                  <input type="checkbox" id="deesser_enabled" checked>
+                  <span class="switch-slider"></span>
+                  <span class="control-title">Sibilance De-Esser (5.5k–8.5k)</span>
+                </label>
+                <div class="control-val-actions">
+                  <span class="param-status-badge" id="badge_deesser_intensity">Default</span>
+                  <span class="control-val" id="deesserVal">0.140</span>
+                  <button class="btn-dice" data-param="deesser_intensity" title="Randomize only De-esser (3%–7%)">🎲</button>
+                </div>
+              </div>
+              <div class="slider-with-tags">
+                <input type="range" id="deesser_intensity" min="0.02" max="0.45" value="0.14" step="0.005">
+                <div class="slider-endpoints">
+                  <span>0.02</span>
+                  <span class="num-tag" id="deesser_intensity_label">0.140</span>
+                  <span>0.45</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Gentle Compression -->
+            <div class="control-card toggleable">
+              <div class="control-header">
+                <label class="switch-label">
+                  <input type="checkbox" id="comp_enabled" checked>
+                  <span class="switch-slider"></span>
+                  <span class="control-title">Vocal Leveling Compressor</span>
+                </label>
+                <div class="control-val-actions">
+                  <span class="param-status-badge" id="badge_comp_thresh">Default</span>
+                  <span class="control-val" id="compVal">-18dB / 2.5:1</span>
+                  <button class="btn-dice" data-param="comp_thresh" title="Randomize Compressor (3%–7%)">🎲</button>
+                </div>
+              </div>
+              <div class="dual-range-group">
+                <div class="range-field">
+                  <label>Threshold (dB):</label>
+                  <input type="range" id="comp_thresh" min="-30" max="-10" value="-18" step="1">
+                  <span class="num-tag" id="comp_thresh_label">-18 dB</span>
+                </div>
+                <div class="range-field">
+                  <label>Ratio:</label>
+                  <input type="range" id="comp_ratio" min="1.5" max="4.5" value="2.5" step="0.1">
+                  <span class="num-tag" id="comp_ratio_label">2.5:1</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Loudness Normalization -->
+            <div class="control-card toggleable">
+              <div class="control-header">
+                <label class="switch-label">
+                  <input type="checkbox" id="loudnorm_enabled" checked>
+                  <span class="switch-slider"></span>
+                  <span class="control-title">Loudness Normalization (EBU R128)</span>
+                </label>
+                <span class="control-val" id="loudnormVal">-16.0 LUFS</span>
+              </div>
+              <div class="range-field">
+                <label>Integrated Target:</label>
+                <select id="loudnorm_lufs" class="studio-select">
+                  <option value="-16.0" selected>-16.0 LUFS (Podcast &amp; Audio Standard)</option>
+                  <option value="-14.0">-14.0 LUFS (Streaming &amp; Web Video)</option>
+                  <option value="-18.0">-18.0 LUFS (Classical / Dynamic Broadcast)</option>
+                  <option value="-23.0">-23.0 LUFS (EBU European Television)</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Peak Limiter -->
+            <div class="control-card toggleable">
+              <div class="control-header">
+                <label class="switch-label">
+                  <input type="checkbox" id="limiter_enabled" checked>
+                  <span class="switch-slider"></span>
+                  <span class="control-title">Peak Limiter &amp; True Peak Ceiling</span>
+                </label>
+                <div class="control-val-actions">
+                  <span class="param-status-badge" id="badge_limiter_ceiling">Default</span>
+                  <span class="control-val" id="limiterVal">-1.00 dBTP</span>
+                  <button class="btn-dice" data-param="limiter_ceiling" title="Randomize Limiter (3%–7%)">🎲</button>
+                </div>
+              </div>
+              <div class="slider-with-tags">
+                <input type="range" id="limiter_ceiling" min="-2.0" max="-0.1" value="-1.0" step="0.05">
+                <div class="slider-endpoints">
+                  <span>-2.0 dBTP</span>
+                  <span class="num-tag" id="limiter_ceiling_label">-1.00 dBTP</span>
+                  <span>-0.1 dBTP</span>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+        </div>
+        </div>
+      </section>
+
+      <!-- RIGHT COLUMN: Interactive Preview & Batch Action Center -->
+      <section class="panel panel-actions">
+        <div class="panel-header">
+          <div class="panel-title-wrap">
+            <svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+            <h2 id="actionsPanelTitle">Preview &amp; Processing</h2>
+          </div>
+          <div class="header-file-select-group">
+            <label for="selectAudioDropdown" class="header-select-label">Select Audio:</label>
+            <select id="selectAudioDropdown" class="studio-select-sm" title="Manually select any voiceover (V1, V2, V3...) to preview and inspect">
+              <option value="">No audio loaded</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Waveform & A/B Player -->
+        <div class="waveform-card">
+          <div class="waveform-top-row">
+            <div class="ab-toggle-group" id="playerToggleGroup">
+              <button class="btn-ab active" id="btnPlayOriginal">Preview Original</button>
+              <button class="btn-ab" id="btnPlayProcessed" data-mode1-only="true">Preview Processed</button>
+            </div>
+            <div class="time-display" id="timeDisplay">00:00 / 00:00</div>
+          </div>
+
+          <div class="waveform-canvas-wrap">
+            <canvas id="waveformCanvas" width="500" height="90"></canvas>
+            <div class="playback-scrubber" id="playbackScrubber"></div>
+          </div>
+
+          <div class="player-controls">
+            <button id="btnPlayPause" class="btn btn-circle btn-primary" title="Play / Pause">
+              <svg id="playIcon" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              <svg id="pauseIcon" viewBox="0 0 24 24" fill="currentColor" style="display:none;"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+            </button>
+            <button id="btnStop" class="btn btn-circle btn-secondary" title="Stop">
+              <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12"/></svg>
+            </button>
+            <button id="btnReplay" class="btn btn-circle btn-secondary" title="Replay Preview From Start">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+            </button>
+            <div class="volume-slider-wrap">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+              <input type="range" id="playerVolume" min="0" max="1" step="0.05" value="1">
+            </div>
+          </div>
+        </div>
+
+        <!-- Visual Cut Map Timeline Inspector -->
+        <div class="cut-timeline-card" id="cutTimelineCard" data-mode1-only="true">
+          <div class="cut-timeline-header">
+            <span>25m+ Smart Cut Timeline Map</span>
+            <span class="cut-stat-badge" id="cutSummaryBadge">0 Cuts Scheduled</span>
+          </div>
+          <div class="cut-timeline-track" id="cutTimelineTrack">
+            <!-- Rendered dynamically -->
+            <div class="timeline-legend">
+              <span class="legend-item"><span class="legend-box safe"></span> 0-25m Protected</span>
+              <span class="legend-item"><span class="legend-box cut"></span> ~1m Cut</span>
+              <span class="legend-item"><span class="legend-box kept"></span> Kept Segments</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Selected Audio Post-Processing & Validation Inspector Card -->
+        <div class="inspector-card" id="selectedFileInspectorCard">
+          <div class="inspector-header">
+            <div class="inspector-title-wrap">
+              <span class="inspector-icon">🔍</span>
+              <span class="inspector-title" id="inspectorFileName">Selected Audio Details</span>
+            </div>
+            <span class="inspector-status-badge" id="inspectorStatusBadge">Ready</span>
+          </div>
+          <div class="inspector-grid">
+            <div class="inspector-item">
+              <span class="lbl">Original Duration</span>
+              <span class="val" id="inspectorOrigDur">00:00</span>
+            </div>
+            <div class="inspector-item" data-mode1-only="true">
+              <span class="lbl">Processed Duration</span>
+              <span class="val" id="inspectorProcDur">--:--</span>
+            </div>
+            <div class="inspector-item" data-mode1-only="true">
+              <span class="lbl">Cuts Applied</span>
+              <span class="val" id="inspectorCuts">0 cuts</span>
+            </div>
+            <div class="inspector-item" data-mode1-only="true">
+              <span class="lbl">Time Removed</span>
+              <span class="val text-amber" id="inspectorRemoved">00:00</span>
+            </div>
+            <div class="inspector-item">
+              <span class="lbl">Processing Status</span>
+              <span class="val" id="inspectorProcessStatus">Not Processed</span>
+            </div>
+            <div class="inspector-item">
+              <span class="lbl">Validation Result</span>
+              <span class="val" id="inspectorValidationStatus">Pending</span>
+            </div>
+            <div class="inspector-item">
+              <span class="lbl">Linked Script</span>
+              <span class="val text-amber" id="inspectorScript">None</span>
+            </div>
+            <div class="inspector-item">
+              <span class="lbl">Caption Sync</span>
+              <span class="val" id="inspectorCaptionStatus">--</span>
+            </div>
+          </div>
+
+          <!-- Structured Error Diagnostic Display Box -->
+          <div class="inspector-error-box" id="inspectorErrorBox" style="display: none;">
+            <div class="error-diag-header">
+              <span class="error-diag-badge" id="errorDiagBadge">ERROR ✕</span>
+              <span class="error-diag-target" id="errorDiagTarget">V3 Forced Alignment</span>
+            </div>
+            <p class="error-diag-reason" id="errorDiagReason"></p>
+            <div class="error-diag-solution">
+              <span class="sol-title">💡 Possible solution:</span>
+              <p class="sol-body" id="errorDiagSolution"></p>
+            </div>
+            <button class="btn btn-sm btn-retry-diag" id="btnRetryDiag">
+              ↻ Retry File
+            </button>
+          </div>
+        </div>
+
+        <!-- Aligned Subtitle Preview Viewer -->
+        <div class="srt-preview-card" id="srtPreviewCard">
+          <div class="srt-preview-header">
+            <div class="srt-preview-title-row">
+              <span class="srt-icon">📝</span>
+              <span class="srt-preview-title">Synchronized Subtitle Preview</span>
+              <span class="badge" id="srtPreviewCueCount">0 Cues</span>
+            </div>
+            <div class="srt-actions-row">
+              <button class="btn btn-xs btn-ghost" id="btnCopySrtPreview" title="Copy SRT text to clipboard">📋 Copy</button>
+              <button class="btn btn-xs btn-ghost" id="btnDownloadCurrentSrt" title="Download this SRT">⬇️ SRT</button>
+            </div>
+          </div>
+          <div class="srt-cues-scroller" id="srtCuesScroller">
+            <div class="empty-srt-state">No subtitles generated yet. Run alignment or processing to preview synced cues.</div>
+          </div>
+        </div>
+
+        <!-- Action Command Center -->
+        <div class="action-buttons-group">
+          <button id="btnTestPreview" class="btn btn-outline btn-block" data-mode1-only="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
+            <span>Test Preview Selected File</span>
+          </button>
+
+          <!-- Batch Size Selection Control -->
+          <div class="batch-size-card" id="batchSizeCard" data-mode1-only="true">
+            <div class="batch-size-header">
+              <label for="processBatchSizeSelect">Process Batch Size (Simultaneous):</label>
+              <select id="processBatchSizeSelect" class="studio-select-sm">
+                <option value="1">1 audio at a time</option>
+                <option value="2">2 audios at a time</option>
+                <option value="3" selected>3 audios at a time (Default)</option>
+                <option value="4">4 audios at a time</option>
+                <option value="5">5 audios at a time</option>
+                <option value="8">8 audios at a time</option>
+                <option value="10">10 audios at a time</option>
+              </select>
+            </div>
+            <small class="batch-size-hint">Processes audios in chunks of 3 by default to optimize speed and accuracy.</small>
+          </div>
+
+          <button id="btnProcessBatch" class="btn btn-cta btn-block">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            <span>Process All Voiceovers (V1, V2, ...)</span>
+          </button>
+
+          <!-- Overall Batch Progress Bar -->
+          <div class="batch-progress-card" id="batchProgressCard">
+            <div class="progress-info-row">
+              <span id="batchProgressStatus">Ready</span>
+              <span id="batchProgressPercent">0%</span>
+            </div>
+            <div class="progress-bar-bg">
+              <div class="progress-bar-fill" id="batchProgressBarFill"></div>
+            </div>
+          </div>
+
+          <!-- Processing Analytics Dashboard Card -->
+          <div class="analytics-card" id="analyticsDashboardCard">
+            <div class="analytics-header">
+              <span class="analytics-title">📊 Processing Analytics</span>
+              <span class="analytics-status-tag" id="analyticsStatusTag">Ready</span>
+            </div>
+            <div class="analytics-grid">
+              <div class="analytics-metric">
+                <span class="metric-label">Files</span>
+                <span class="metric-value" id="analyticsFiles">0 / 0</span>
+              </div>
+              <div class="analytics-metric">
+                <span class="metric-label">Completion</span>
+                <span class="metric-value" id="analyticsCompletion">0%</span>
+              </div>
+              <div class="analytics-metric">
+                <span class="metric-label">Successful</span>
+                <span class="metric-value text-success" id="analyticsSuccessful">0</span>
+              </div>
+              <div class="analytics-metric">
+                <span class="metric-label">Failed</span>
+                <span class="metric-value text-danger" id="analyticsFailed">0</span>
+              </div>
+              <div class="analytics-metric">
+                <span class="metric-label">Original Total</span>
+                <span class="metric-value" id="analyticsOriginalDur">00:00</span>
+              </div>
+              <div class="analytics-metric" data-mode1-only="true">
+                <span class="metric-label">Processed Total</span>
+                <span class="metric-value" id="analyticsProcessedDur">00:00</span>
+              </div>
+              <div class="analytics-metric" data-mode1-only="true">
+                <span class="metric-label">Duration Removed</span>
+                <span class="metric-value text-amber" id="analyticsRemovedDur">00:00</span>
+              </div>
+              <div class="analytics-metric">
+                <span class="metric-label">Outputs</span>
+                <span class="metric-value text-success" id="analyticsOutputs">0</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Final Verified Validation Report Card -->
+          <div class="final-report-card" id="finalReportCard" style="display: none;">
+            <div class="final-report-header">
+              <div class="report-title-wrap">
+                <span class="report-icon">🏁</span>
+                <span class="final-report-title" id="finalReportTitle">Final Verified Validation Report</span>
+              </div>
+              <span class="final-report-badge" id="finalReportBadge">✓ Verified</span>
+            </div>
+            <div class="final-report-lines" id="finalReportLines">
+              <!-- Dynamically populated based on active mode -->
+            </div>
+            <div class="final-report-actions" id="finalReportActions" style="display: none;">
+              <button class="btn btn-xs btn-outline-danger" id="btnRetryFailedAll">
+                ↻ Retry Failed Files (<span id="failedCountBadge">0</span>)
+              </button>
+            </div>
+          </div>
+
+          <!-- Manual Destination Selection & Export -->
+          <div class="export-card">
+            <label class="section-label">Export Destination Folder</label>
+            <div class="input-with-action">
+              <input type="text" id="exportDestinationPath" class="studio-input" placeholder="/Users/username/Processed_Voiceovers">
+              <button id="btnBrowseExport" class="btn btn-secondary" title="Choose destination folder">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                Browse
+              </button>
+            </div>
+
+            <div class="export-buttons-grid">
+              <button id="btnExportAll" class="btn btn-export-primary" disabled data-mode1-only="true" title="Export both processed MP3s and synchronized SRTs to folder">
+                <span>📁 Export Audio + SRTs</span>
+                <small>To destination folder</small>
+              </button>
+              <button id="btnExportSrts" class="btn btn-secondary" disabled title="Export only synchronized SRT subtitles to folder">
+                <span>📝 Export SRTs Only</span>
+                <small>V1.srt, V2.srt...</small>
+              </button>
+            </div>
+
+            <div class="export-downloads-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;">
+              <button id="btnDownloadAudioZip" class="btn btn-glass" disabled data-mode1-only="true" title="Download ZIP containing strictly processed MP3 audio files">
+                <span>🎵 Download Audio (ZIP)</span>
+                <small>Strictly MP3s</small>
+              </button>
+              <button id="btnDownloadCaptionsZip" class="btn btn-glass" disabled title="Download ZIP containing strictly synchronized SRT subtitles">
+                <span>📝 Download Captions (ZIP)</span>
+                <small>Strictly SRTs</small>
+              </button>
+            </div>
+
+            <div style="margin-top: 8px;" id="bundleDownloadRow" data-mode1-only="true">
+              <button id="btnDownloadZip" class="btn btn-xs btn-ghost btn-block" disabled title="Download all processed files and captions in one bundle" style="font-size: 0.76rem; opacity: 0.85;">
+                📦 Download Complete Bundle (Audio + Captions)
+              </button>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+    </main>
+
+    <!-- BOTTOM DRAWER: Logs Console -->
+    <footer class="studio-drawer">
+      <div class="drawer-header">
+        <div class="drawer-tabs">
+          <button class="drawer-tab-btn active" data-drawer="logs">
+            <span class="dot-live"></span> Console &amp; Processing Logs
+          </button>
+        </div>
+        <div class="drawer-actions-right">
+          <button id="btnCopyLogs" class="btn btn-xs btn-secondary" title="Copy all console logs to clipboard">📋 Copy Logs</button>
+          <button id="btnClearLogs" class="btn btn-xs btn-ghost">Clear Log</button>
+        </div>
+      </div>
+
+      <div class="drawer-content-body">
+        <!-- Log Terminal View -->
+        <div class="drawer-view active" id="view-logs">
+          <div class="terminal-container" id="terminalLogs">
+            <div class="log-line info"><span class="log-time">[Init]</span> Voiceover Studio Pro v2.0 ready. 1–5% auto-variation active per file.</div>
+          </div>
+        </div>
+      </div>
+    </footer>
+
+  </div>
+
+  <!-- Audio Element for Player -->
+  <audio id="audioElement" preload="metadata"></audio>
+
+  <!-- Gemini AI Studio Intelligence Modal -->
+  <div class="modal-overlay" id="geminiModal">
+    <div class="modal-card modal-gemini">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <div class="gemini-icon-pill">✨</div>
+          <div>
+            <h3>Gemini AI Audio Intelligence</h3>
+            <p class="modal-subtitle">AI-Driven Timbre Analysis, Anti-Fingerprint Optimization &amp; Auto Key Failover</p>
+          </div>
+        </div>
+        <button class="btn-close-modal" id="btnCloseGeminiModal">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- 1. Bulk Key Pool Manager -->
+        <div class="gemini-config-section">
+          <div class="section-title-row">
+            <label class="modal-label">Gemini API Key Pool (Bulk Auto-Failover)</label>
+            <span class="info-tag">If one key is exhausted, automatically shifts to the next</span>
+          </div>
+          <textarea id="geminiKeysInput" class="studio-textarea" rows="3" placeholder="Paste Gemini API Key(s) here, one per line (AIzaSy...)...&#10;Key 1&#10;Key 2&#10;Key 3"></textarea>
+          <div class="key-actions-row">
+            <button id="btnSaveGeminiKeys" class="btn btn-sm btn-primary">Save Key Pool</button>
+            <div id="geminiKeyPoolList" class="key-pool-status-inline"></div>
+          </div>
+        </div>
+
+        <!-- 2. Model Selector & Prompt Strategy -->
+        <div class="gemini-grid-row">
+          <div class="form-group">
+            <label class="modal-label">Gemini Model (Google AI Studio)</label>
+            <select id="geminiModelSelect" class="studio-select">
+              <option value="gemini-2.5-flash" selected>Gemini 2.5 Flash (Recommended - Fastest &amp; Multimodal)</option>
+              <option value="gemini-2.5-pro">Gemini 2.5 Pro (Deep Acoustic Reasoning)</option>
+              <option value="gemini-2.0-flash">Gemini 2.0 Flash (Next-Gen Speed)</option>
+              <option value="gemini-1.5-pro">Gemini 1.5 Pro (Complex Audio &amp; Long Context)</option>
+              <option value="gemini-1.5-flash">Gemini 1.5 Flash (Lightweight)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label class="modal-label">Custom Goal / Style (Optional)</label>
+            <input type="text" id="geminiCustomPrompt" class="studio-input" placeholder="e.g. Deep radio warmth, anti-content ID for YouTube">
+          </div>
+        </div>
+
+        <!-- 3. Trigger Analysis -->
+        <div class="gemini-analyze-cta">
+          <button id="btnRunGeminiAnalysis" class="btn btn-primary btn-block btn-glow">
+            ✨ Analyze Active Voiceover &amp; Suggest Best Settings
+          </button>
+        </div>
+
+        <!-- 4. Result Card -->
+        <div class="gemini-result-card" id="geminiResultCard">
+          <div class="gemini-empty-prompt">
+            <p>Click <strong>"Analyze Active Voiceover"</strong> above to let Gemini evaluate audio acoustics, dynamics, and formulation of anti-copyright parameter ranges.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="js/audio_dsp.js"></script>
+  <script src="js/visualizer.js"></script>
+  <script src="js/gemini_ai.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

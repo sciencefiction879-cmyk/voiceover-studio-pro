@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+develop-eggs/
+dist/
+bin/
+sample_voiceovers/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Data directories (keep directory structure, ignore user audio & text files)
+data/uploads/**
+!data/uploads/
+!data/uploads/.gitkeep
+data/processed/**
+!data/processed/
+!data/processed/.gitkeep
+data/previews/**
+!data/previews/
+!data/previews/.gitkeep
+data/exports/**
+!data/exports/
+!data/exports/.gitkeep
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Logs
+*.log
