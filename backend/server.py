@@ -129,13 +129,24 @@ STATE = {
     "caption_mode": "mode1",   # "mode1" (Process + Cut + SRT) or "mode2" (Alignment Only)
     "logs": [],                # System logs
     "processed_files": {},     # Key: filename, Value: processed info
+    "output_folder": None,     # User-selected destination folder for real-time saving
+    "output_subfolders": {},   # {"parent_dir": ..., "voiceover_dir": ..., "caption_dir": ...}
     "analytics": {
         "totalFiles": 0,
+        "totalAudios": 0,
         "processedFiles": 0,
+        "processedCount": 0,
         "remainingFiles": 0,
+        "savedCount": 0,
+        "processingCount": 0,
+        "waitingCount": 0,
         "successfulCount": 0,
         "failedCount": 0,
         "partialCount": 0,
+        "voiceoversSaved": "0/0",
+        "captionsSaved": "0/0",
+        "savedVoiceoversCount": 0,
+        "savedCaptionsCount": 0,
         "completionPercent": 0,
         "currentBatch": 0,
         "totalBatches": 0,
@@ -234,13 +245,28 @@ def update_analytics():
             ]
         }
 
+    # Real-time Save & Status Tracking metrics
+    saved_voiceovers = sum(1 for f in files if f.get("voiceoverStatus") == "saved" or (f.get("realtimeSavedMp3") and os.path.exists(f.get("realtimeSavedMp3"))))
+    saved_captions = sum(1 for f in files if f.get("captionStatus") == "saved" or (f.get("realtimeSavedSrt") and os.path.exists(f.get("realtimeSavedSrt"))))
+    processing_count = sum(1 for f in files if f.get("status") == "processing" or f.get("voiceoverStatus") == "processing" or f.get("captionStatus") == "processing")
+    waiting_count = sum(1 for f in files if f.get("status") in ("queued", "waiting", "ready", None, "") and not f.get("hasProcessed") and not f.get("hasProcessedSrt") and f.get("status") != "error")
+
     STATE["analytics"] = {
         "totalFiles": total,
+        "totalAudios": total,
         "processedFiles": processed_count,
+        "processedCount": len(completed) + len(partial),
         "remainingFiles": max(0, total - processed_count),
+        "savedCount": saved_voiceovers,
+        "processingCount": processing_count,
+        "waitingCount": waiting_count,
         "successfulCount": len(completed),
         "failedCount": len(failed),
         "partialCount": len(partial),
+        "voiceoversSaved": f"{saved_voiceovers}/{total}",
+        "captionsSaved": f"{saved_captions}/{total}",
+        "savedVoiceoversCount": saved_voiceovers,
+        "savedCaptionsCount": saved_captions,
         "completionPercent": int(processed_count / total * 100) if total > 0 else 0,
         "currentBatch": STATE.get("current_batch", 0),
         "totalBatches": STATE.get("total_batches", 0),
@@ -258,6 +284,9 @@ def update_analytics():
         "isCompleted": (processed_count == total and total > 0),
         "finalReport": final_report
     }
+
+
+update_analytics()
 
 
 @app.route("/")
@@ -285,28 +314,146 @@ def health_check():
     })
 
 
+def open_native_folder_picker(prompt: str = "Select Folder") -> Optional[str]:
+    """Open native platform folder picker dialog (macOS, Windows, Linux)."""
+    if sys.platform == "darwin":
+        script = f'''
+        tell application "System Events"
+            activate
+            set chosenFolder to choose folder with prompt "{prompt}"
+            return POSIX path of chosenFolder
+        end tell
+        '''
+        try:
+            proc = subprocess.run(["osascript", "-e", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+            if proc.returncode == 0:
+                p = proc.stdout.strip()
+                if p and os.path.exists(p):
+                    return p
+        except Exception:
+            pass
+    elif sys.platform == "win32":
+        ps_script = f'''
+        Add-Type -AssemblyName System.Windows.Forms
+        $f = New-Object System.Windows.Forms.FolderBrowserDialog
+        $f.Description = "{prompt}"
+        $f.ShowNewFolderButton = $true
+        if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
+            Write-Output $f.SelectedPath
+        }}
+        '''
+        try:
+            proc = subprocess.run(["powershell", "-NoProfile", "-Command", ps_script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+            if proc.returncode == 0:
+                p = proc.stdout.strip()
+                if p and os.path.exists(p):
+                    return p
+        except Exception:
+            pass
+
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        path = filedialog.askdirectory(title=prompt)
+        root.destroy()
+        if path and os.path.exists(path):
+            return path
+    except Exception:
+        pass
+
+    return None
+
+
+def ensure_output_subfolders(folder_path: str) -> Dict[str, str]:
+    """
+    Ensures exactly two subfolders exist inside the selected destination folder:
+    Selected Folder/
+    ├── Voiceover/
+    └── Caption/
+    """
+    parent = os.path.abspath(folder_path)
+    os.makedirs(parent, exist_ok=True)
+    voiceover_dir = os.path.join(parent, "Voiceover")
+    caption_dir = os.path.join(parent, "Caption")
+    os.makedirs(voiceover_dir, exist_ok=True)
+    os.makedirs(caption_dir, exist_ok=True)
+    return {
+        "parent_dir": parent,
+        "voiceover_dir": voiceover_dir,
+        "caption_dir": caption_dir
+    }
+
+
 @app.route("/api/browse-folder", methods=["POST"])
 def browse_folder():
     """Open native macOS folder picker dialog using osascript."""
     default_prompt = request.json.get("prompt", "Select Voiceovers Folder") if request.is_json else "Select Voiceovers Folder"
-    
-    script = f'''
-    tell application "System Events"
-        activate
-        set chosenFolder to choose folder with prompt "{default_prompt}"
-        return POSIX path of chosenFolder
-    end tell
-    '''
-    try:
-        proc = subprocess.run(["osascript", "-e", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
-        if proc.returncode == 0:
-            selected_path = proc.stdout.strip()
-            if selected_path:
-                return jsonify({"success": True, "path": selected_path})
-    except Exception as e:
-        add_log(f"Native folder picker notice: {e}", "warning")
-
+    selected_path = open_native_folder_picker(prompt=default_prompt)
+    if selected_path:
+        return jsonify({"success": True, "path": selected_path})
     return jsonify({"success": False, "message": "Folder selection cancelled or not available."})
+
+
+@app.route("/api/browse-output-folder", methods=["POST"])
+def browse_output_folder():
+    """
+    Open native folder picker for Process All Audios output destination.
+    Automatically creates:
+    Selected Folder/
+    ├── Voiceover/
+    └── Caption/
+    """
+    default_prompt = "Select Destination Folder for Voiceover & Caption Outputs"
+    if request.is_json and request.json:
+        default_prompt = request.json.get("prompt", default_prompt)
+
+    selected_path = open_native_folder_picker(prompt=default_prompt)
+    if selected_path:
+        subdirs = ensure_output_subfolders(selected_path)
+        STATE["output_folder"] = subdirs["parent_dir"]
+        STATE["output_subfolders"] = subdirs
+        add_log(f"Destination folder selected: {subdirs['parent_dir']}", "info")
+        add_log(f"  ├── Voiceover/ folder created & ready ✓", "info")
+        add_log(f"  └── Caption/ folder created & ready ✓", "info")
+        return jsonify({
+            "success": True,
+            "path": subdirs["parent_dir"],
+            "voiceover_dir": subdirs["voiceover_dir"],
+            "caption_dir": subdirs["caption_dir"]
+        })
+
+    return jsonify({"success": False, "message": "Folder selection cancelled or unavailable."})
+
+
+@app.route("/api/set-output-folder", methods=["POST"])
+def set_output_folder():
+    """
+    Explicitly set and validate destination folder manually or programmatically.
+    Automatically creates Voiceover/ and Caption/ subfolders.
+    """
+    data = request.get_json() or {}
+    folder_path = data.get("folder_path", "").strip()
+    if not folder_path:
+        return jsonify({"success": False, "error": "Folder path is required."}), 400
+
+    try:
+        subdirs = ensure_output_subfolders(folder_path)
+        STATE["output_folder"] = subdirs["parent_dir"]
+        STATE["output_subfolders"] = subdirs
+        add_log(f"Destination folder configured: {subdirs['parent_dir']}", "info")
+        add_log(f"  ├── Voiceover/ folder created & ready ✓", "info")
+        add_log(f"  └── Caption/ folder created & ready ✓", "info")
+        return jsonify({
+            "success": True,
+            "path": subdirs["parent_dir"],
+            "voiceover_dir": subdirs["voiceover_dir"],
+            "caption_dir": subdirs["caption_dir"]
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Failed to set output folder: {e}"}), 400
 
 
 @app.route("/api/scan-folder", methods=["POST"])
@@ -494,6 +641,12 @@ def upload_files():
                 "estimatedProcessedDuration": cut_schedule["finalEstimatedDuration"],
                 "formattedEstimatedDuration": cut_schedule.get("formattedFinalDuration", ""),
                 "status": "ready",
+                "voiceoverStatus": "waiting",
+                "captionStatus": "waiting" if has_script else "skipped",
+                "voiceoverError": None,
+                "captionError": None,
+                "realtimeSavedMp3": None,
+                "realtimeSavedSrt": None,
                 "hasProcessed": False,
                 "hasScript": has_script,
                 "scriptPath": script_path,
@@ -705,7 +858,7 @@ def generate_preview():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-def process_single_item_worker(item, idx, total_count, caption_mode, settings):
+def process_single_item_worker(item, idx, total_count, caption_mode, settings, output_folder=None):
     """
     Core worker function for an individual voiceover item.
     Supports Mode 1 (Audio DSP + cuts + cut-sync SRT) and Mode 2 (Forced alignment only, audio untouched).
@@ -714,6 +867,7 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings):
     - Validates output on disk before setting SUCCESS ✓.
     - Marks PARTIAL ⚠ if audio passes but caption sync fails in Mode 1.
     - Marks ERROR ✕ on failure and provides retry capability.
+    - Real-Time Output Saving: Immediately saves completed files into Voiceover/ and Caption/ subfolders.
     """
     in_path = item.get("filePath")
     orig_name = item.get("fileName")
@@ -724,6 +878,19 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings):
     item["errorDetails"] = None
     item["errorMessage"] = None
     item["warningMessage"] = None
+
+    if output_folder is None:
+        output_folder = STATE.get("output_folder")
+
+    voiceover_dir = None
+    caption_dir = None
+    if output_folder:
+        try:
+            subdirs = ensure_output_subfolders(output_folder)
+            voiceover_dir = subdirs["voiceover_dir"]
+            caption_dir = subdirs["caption_dir"]
+        except Exception as e_dir:
+            add_log(f"Warning: Could not prepare destination subfolders in {output_folder}: {e_dir}", "warning")
 
     # Check input audio file existence
     if not in_path or not os.path.exists(in_path):
@@ -739,6 +906,11 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings):
     # MODE 2: ALIGNMENT ONLY (No cuts, No audio alterations, SRT only)
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if caption_mode == "mode2":
+        item["voiceoverStatus"] = "untouched"
+        item["captionStatus"] = "processing"
+        item["voiceoverError"] = None
+        item["captionError"] = None
+
         # Check script existence
         script_in = item.get("scriptPath") or item.get("srtPath")
         if not script_in:
@@ -753,6 +925,8 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings):
             err = diagnose_script_error(orig_name, None)
             item["status"] = "error"
             item["statusLabel"] = "ERROR ✕"
+            item["captionStatus"] = "failed"
+            item["captionError"] = err.get("reason", "No matching script file found.")
             item["errorDetails"] = err
             item["errorMessage"] = err["formatted"]
             add_log(f"{err['formatted']}", "error")
@@ -779,6 +953,8 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings):
                 err = diagnose_srt_error(out_srt_name, reason_detail=f"{out_srt_name} was not created on disk.")
                 item["status"] = "error"
                 item["statusLabel"] = "ERROR ✕"
+                item["captionStatus"] = "failed"
+                item["captionError"] = f"{out_srt_name} was not created on disk."
                 item["errorDetails"] = err
                 item["errorMessage"] = err["formatted"]
                 add_log(f"{err['formatted']}", "error")
@@ -791,10 +967,31 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings):
                 err = diagnose_srt_error(out_srt_name, reason_detail=val.get("error", "SRT validation failed."))
                 item["status"] = "error"
                 item["statusLabel"] = "ERROR ✕"
+                item["captionStatus"] = "failed"
+                item["captionError"] = val.get("error", "SRT validation failed.")
                 item["errorDetails"] = err
                 item["errorMessage"] = err["formatted"]
                 add_log(f"{err['formatted']}", "error")
                 return False, orig_name, err
+
+            # Real-time saving to Caption folder (Immediate per file)
+            saved_srt = False
+            if caption_dir:
+                try:
+                    target_srt = os.path.join(caption_dir, out_srt_name)
+                    shutil.copy2(out_srt_path, target_srt)
+                    if os.path.exists(target_srt):
+                        item["realtimeSavedSrt"] = target_srt
+                        item["captionSavedPath"] = target_srt
+                        item["captionStatus"] = "saved"
+                        saved_srt = True
+                    else:
+                        item["captionStatus"] = "ready_to_save"
+                except Exception as e_save:
+                    item["captionStatus"] = "ready_to_save"
+                    add_log(f"Notice: Failed to save {out_srt_name} to Caption folder: {e_save}", "warning")
+            else:
+                item["captionStatus"] = "ready_to_save"
 
             item["status"] = "completed"
             item["statusLabel"] = "SUCCESS ✓"
@@ -809,15 +1006,19 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings):
             STATE["processed_files"][orig_name] = item
             STATE["processed_files"][out_srt_name] = item
 
-            add_log(
-                f"{base_name}.srt — SUCCESS ✓: Mode 2 Alignment complete ({caption_res.get('finalCueCount', 0)} cues matched to voice-over, audio untouched).",
-                "success"
-            )
+            # Real-time save status logs
+            add_log(f"{base_name} Alignment Complete ✓", "success")
+            if saved_srt:
+                add_log(f"{out_srt_name} saved to Caption ✓", "success")
+            else:
+                add_log(f"{base_name}.srt — SUCCESS ✓: Mode 2 Alignment complete ({caption_res.get('finalCueCount', 0)} cues matched).", "success")
             return True, orig_name, None
         except Exception as e:
             err = diagnose_alignment_error(orig_name, os.path.basename(script_in) if script_in else "script", e)
             item["status"] = "error"
             item["statusLabel"] = "ERROR ✕"
+            item["captionStatus"] = "failed"
+            item["captionError"] = err.get("reason", str(e))
             item["errorDetails"] = err
             item["errorMessage"] = err["formatted"]
             add_log(f"{err['formatted']}", "error")
@@ -828,6 +1029,11 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings):
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     out_name = f"{base_name}.mp3"
     out_path = os.path.join(PROCESSED_DIR, out_name)
+
+    item["voiceoverStatus"] = "processing"
+    item["captionStatus"] = "waiting" if item.get("hasScript") else "skipped"
+    item["voiceoverError"] = None
+    item["captionError"] = None
 
     try:
         batch_settings = {**settings, "master_locked": True, "randomize_per_file": False}
@@ -845,6 +1051,9 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings):
             err = diagnose_output_error(orig_name, out_path)
             item["status"] = "error"
             item["statusLabel"] = "ERROR ✕"
+            item["voiceoverStatus"] = "failed"
+            item["voiceoverError"] = err.get("reason", "Audio file was not written to disk.")
+            item["captionStatus"] = "skipped"
             item["errorDetails"] = err
             item["errorMessage"] = err["formatted"]
             add_log(f"{err['formatted']}", "error")
@@ -858,10 +1067,32 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings):
             err = diagnose_output_error(orig_name, out_path, Exception(validation.get("error", "Audio verification failed")))
             item["status"] = "error"
             item["statusLabel"] = "ERROR ✕"
+            item["voiceoverStatus"] = "failed"
+            item["voiceoverError"] = validation.get("error", "Audio verification failed.")
+            item["captionStatus"] = "skipped"
             item["errorDetails"] = err
             item["errorMessage"] = err["formatted"]
             add_log(f"{err['formatted']}", "error")
             return False, orig_name, err
+
+        # Real-time saving to Voiceover folder (Immediate per file)
+        saved_mp3 = False
+        if voiceover_dir:
+            try:
+                target_mp3 = os.path.join(voiceover_dir, out_name)
+                shutil.copy2(out_path, target_mp3)
+                if os.path.exists(target_mp3):
+                    item["realtimeSavedMp3"] = target_mp3
+                    item["voiceoverSavedPath"] = target_mp3
+                    item["voiceoverStatus"] = "saved"
+                    saved_mp3 = True
+                else:
+                    item["voiceoverStatus"] = "ready_to_save"
+            except Exception as e_save:
+                item["voiceoverStatus"] = "ready_to_save"
+                add_log(f"Notice: Failed to save {out_name} to Voiceover folder: {e_save}", "warning")
+        else:
+            item["voiceoverStatus"] = "ready_to_save"
 
         item["status"] = "completed"
         item["statusLabel"] = "SUCCESS ✓"
@@ -889,12 +1120,14 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings):
                 item["scriptType"] = os.path.splitext(script_in)[1].lower()
                 item["hasScript"] = True
 
+        saved_srt = False
         if script_in and os.path.exists(script_in):
             out_srt_name = f"{base_name}.srt"
             out_srt_path = os.path.join(PROCESSED_DIR, out_srt_name)
             speed_val = safe_float(params.get("speed_factor"), 1.0)
             cuts_list = res.get("cuts", [])
             final_dur = res.get("processedDuration", 0.0)
+            item["captionStatus"] = "processing"
 
             try:
                 caption_res = process_caption_pipeline(
@@ -914,9 +1147,26 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings):
                     item["processedSrtFileName"] = out_srt_name
                     item["captionValidation"] = caption_res.get("validation", {})
                     item["captionCuesCount"] = caption_res.get("finalCueCount", 0)
-                    item["captionStatus"] = "Cut-Synced ✓"
                     item["srtStatus"] = "ready"
                     item["scriptStatus"] = "Provided"
+
+                    # Real-time saving to Caption folder (Immediate per file)
+                    if caption_dir:
+                        try:
+                            target_srt = os.path.join(caption_dir, out_srt_name)
+                            shutil.copy2(out_srt_path, target_srt)
+                            if os.path.exists(target_srt):
+                                item["realtimeSavedSrt"] = target_srt
+                                item["captionSavedPath"] = target_srt
+                                item["captionStatus"] = "saved"
+                                saved_srt = True
+                            else:
+                                item["captionStatus"] = "ready_to_save"
+                        except Exception as e_save_srt:
+                            item["captionStatus"] = "ready_to_save"
+                            add_log(f"Notice: Failed to save {out_srt_name} to Caption folder: {e_save_srt}", "warning")
+                    else:
+                        item["captionStatus"] = "ready_to_save"
 
                     add_log(
                         f"{base_name}.srt ✓ Forced-aligned & cut-synchronized: {caption_res.get('finalCueCount', 0)} cues matched to voice-over "
@@ -927,12 +1177,16 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings):
                     err = diagnose_srt_error(out_srt_name, reason_detail=f"{out_srt_name} was not created on disk.")
                     item["status"] = "partial"
                     item["statusLabel"] = "PARTIAL ⚠"
+                    item["captionStatus"] = "failed"
+                    item["captionError"] = f"{out_srt_name} was not created on disk."
                     item["errorDetails"] = err
                     add_log(f"{base_name} — PARTIAL ⚠: MP3 processed, but SRT generation failed: {err['reason']}", "warning")
             except Exception as e_srt:
                 err = diagnose_alignment_error(orig_name, os.path.basename(script_in), e_srt)
                 item["status"] = "partial"
                 item["statusLabel"] = "PARTIAL ⚠"
+                item["captionStatus"] = "failed"
+                item["captionError"] = err.get("reason", str(e_srt))
                 item["errorDetails"] = err
                 item["warningMessage"] = f"Audio processed successfully, but caption alignment failed: {err['reason']}"
                 add_log(f"{base_name} — PARTIAL ⚠: {err['formatted']}", "warning")
@@ -940,7 +1194,8 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings):
             # Script NOT provided in Mode 1 (Audio Processing Mode)
             # Per core rule: Script is OPTIONAL. Missing script must NEVER block audio processing.
             item["hasProcessedSrt"] = False
-            item["captionStatus"] = "Skipped"
+            item["captionStatus"] = "skipped"
+            item["captionStatusLabel"] = "Skipped (No script provided)"
             item["srtStatus"] = "skipped"
             item["scriptStatus"] = "Not provided"
             item["status"] = "completed"
@@ -952,13 +1207,15 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings):
         STATE["processed_files"][orig_name] = item
         STATE["processed_files"][out_name] = item
 
-        cap_summary = f"Captions: {item.get('captionCuesCount', 0)} cues cut-synced ✓" if item.get("hasProcessedSrt") else "Captions: Skipped (no script provided)"
-        add_log(
-            f"{base_name} — SUCCESS ✓: Processing applied ✓ | Speed ({params['speed_factor']:.3f}x) ✓ | "
-            f"Pitch ({params['pitch_semitones']:+.2f}st) ✓ | EQ verified ✓ | Cuts ({res['cutCount']}) verified ✓ | "
-            f"Output generated ✓ | Duration ({item['formattedFinalDuration']}) verified ✓ | {cap_summary}",
-            "success"
-        )
+        # Real-time save status logs (Per user prompt specification)
+        add_log(f"{base_name} Processing Complete ✓", "success")
+        if saved_mp3:
+            add_log(f"{out_name} saved to Voiceover ✓", "success")
+        if item.get("hasProcessedSrt") and saved_srt:
+            add_log(f"{out_srt_name} saved to Caption ✓", "success")
+        elif not script_in:
+            add_log(f"(Caption skipped: no script provided for {base_name})", "info")
+
         return True, orig_name, None
     except Exception as e:
         err = diagnose_audio_error(in_path, orig_name, e)
@@ -974,7 +1231,7 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings):
 def process_batch():
     """
     Start batch processing of voiceovers in configurable chunks (Default: 3 at a time).
-    Processes batch chunk -> validates every output on disk -> logs results -> proceeds to next batch chunk.
+    Processes batch chunk -> validates every output on disk -> real-time saves to Voiceover/ & Caption/ -> logs results -> proceeds to next batch chunk.
     """
     if STATE["is_processing"]:
         return jsonify({"success": False, "error": "A batch is already running."}), 400
@@ -992,11 +1249,32 @@ def process_batch():
     caption_mode = data.get("caption_mode") or STATE.get("caption_mode", "mode1")
     STATE["caption_mode"] = caption_mode
 
+    # Configure output destination folder for real-time saving
+    output_folder = data.get("output_folder") or STATE.get("output_folder")
+    if output_folder:
+        try:
+            output_folder = os.path.abspath(output_folder)
+            subdirs = ensure_output_subfolders(output_folder)
+            STATE["output_folder"] = output_folder
+            STATE["output_subfolders"] = subdirs
+            add_log(f"Destination folder active: {output_folder}", "info")
+            add_log(f"  ├── Voiceover/ folder: {subdirs['voiceover_dir']} ✓", "info")
+            add_log(f"  └── Caption/ folder: {subdirs['caption_dir']} ✓", "info")
+        except Exception as e_out:
+            add_log(f"Warning: Could not setup destination folder: {e_out}", "warning")
+
     def run_chunked_worker():
         STATE["is_processing"] = True
         STATE["progress"] = 0
         total = len(targets)
         start_time = time.time()
+
+        # Initialize all target files in tracker to waiting/skipped status
+        for item in targets:
+            item["voiceoverStatus"] = "waiting"
+            item["captionStatus"] = "waiting" if item.get("hasScript") else "skipped"
+            item["voiceoverError"] = None
+            item["captionError"] = None
 
         # Split into chunks of batch_size (default 3)
         chunks = [targets[i:i + batch_size] for i in range(0, total, batch_size)]
@@ -1026,7 +1304,7 @@ def process_batch():
 
             with ThreadPoolExecutor(max_workers=len(chunk)) as executor:
                 futures = {
-                    executor.submit(process_single_item_worker, item, processed_so_far + i, total, caption_mode, settings): item
+                    executor.submit(process_single_item_worker, item, processed_so_far + i, total, caption_mode, settings, output_folder): item
                     for i, item in enumerate(chunk)
                 }
 
@@ -1158,6 +1436,20 @@ def align_single_srt():
         if target.get("status") in ("error", "partial"):
             target["status"] = "completed"
             target["statusLabel"] = "SUCCESS ✓"
+
+        # Real-time saving to Caption folder if destination configured
+        saved_srt = False
+        out_folder = STATE.get("output_folder")
+        if out_folder:
+            try:
+                subdirs = ensure_output_subfolders(out_folder)
+                target_srt = os.path.join(subdirs["caption_dir"], out_srt_name)
+                shutil.copy2(out_srt_path, target_srt)
+                target["realtimeSavedSrt"] = target_srt
+                saved_srt = True
+                add_log(f"{out_srt_name} saved to Caption ✓", "success")
+            except Exception as e_save_srt:
+                add_log(f"Notice: Failed to save {out_srt_name} to Caption folder: {e_save_srt}", "warning")
 
         STATE["processed_files"][orig_name] = target
         STATE["processed_files"][out_srt_name] = target
@@ -1322,6 +1614,8 @@ def get_status():
         "progress": STATE["progress"],
         "logs": STATE["logs"][-60:],
         "files": STATE["files"],
+        "outputFolder": STATE.get("output_folder"),
+        "outputSubfolders": STATE.get("output_subfolders") or {},
         "analytics": STATE["analytics"]
     })
 

@@ -62,9 +62,9 @@ def build_app():
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.3.0</string>
+    <string>0.4.0</string>
     <key>CFBundleVersion</key>
-    <string>0.3.0</string>
+    <string>0.4.0</string>
 
 
     <key>LSMinimumSystemVersion</key>

@@ -26,7 +26,7 @@
         <div>
           <div style="display: flex; align-items: center; gap: 8px;">
             <h1 class="brand-title">Voiceover Studio Pro</h1>
-            <span class="version-tag">v0.3</span>
+            <span class="version-tag">v0.4</span>
           </div>
           <p class="brand-subtitle">Mode 1 (Process + Cut + SRT) &bull; Mode 2 (Alignment Only) &bull; Forced Alignment &bull; 25m+ Cuts &bull; Gemini AI</p>
         </div>
@@ -819,6 +819,41 @@
             <small class="batch-size-hint">Processes audios in chunks of 3 by default to optimize speed and accuracy.</small>
           </div>
 
+          <!-- Output Folder Selection Card (Process All Audios) -->
+          <div class="output-folder-card" id="outputFolderCard">
+            <div class="output-folder-header">
+              <span class="output-folder-title">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                Output Destination Folder
+              </span>
+              <span class="realtime-badge">⚡ Real-Time Streaming</span>
+            </div>
+
+            <div class="output-folder-action-row">
+              <button id="btnSelectOutputFolder" class="btn btn-outline btn-folder-select" type="button">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                <span>Select Output Folder</span>
+              </button>
+              <div class="output-folder-path-box" id="outputFolderPathBox" title="Selected Output Destination">
+                <span class="path-placeholder" id="outputFolderPlaceholder">No folder selected (Click to choose destination)</span>
+                <span class="path-value" id="outputFolderPathText" style="display:none;"></span>
+              </div>
+            </div>
+
+            <!-- Auto-created Subfolders Structure Indicator -->
+            <div class="subfolders-preview" id="subfoldersPreview">
+              <div class="subfolder-item" title="Processed MP3 audio files will be saved here in real-time as each file finishes">
+                <span class="subfolder-tag">📁 Voiceover/</span>
+                <span class="subfolder-desc">Processed MP3s saved immediately (V1.mp3, V2.mp3...)</span>
+              </div>
+              <div class="subfolder-item" title="Cut-synchronized SRT subtitle files will be saved here in real-time as each file finishes">
+                <span class="subfolder-tag">📁 Caption/</span>
+                <span class="subfolder-desc">Cut-synced SRTs saved immediately (V1.srt, V2.srt...)</span>
+              </div>
+            </div>
+            <small class="output-folder-hint">⚡ Completed files are written in real time as each audio finishes—no waiting for the entire batch.</small>
+          </div>
+
           <button id="btnProcessBatch" class="btn btn-cta btn-block">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
             <span>Process All Voiceovers (V1, V2, ...)</span>
@@ -832,6 +867,63 @@
             </div>
             <div class="progress-bar-bg">
               <div class="progress-bar-fill" id="batchProgressBarFill"></div>
+            </div>
+          </div>
+
+          <!-- Real-Time Output Status & Save Tracker Card -->
+          <div class="output-tracker-card" id="outputStatusTrackerCard">
+            <div class="output-tracker-header">
+              <div class="tracker-title-wrap">
+                <span class="tracker-pulse-dot"></span>
+                <span class="output-tracker-title">Real-Time Output Status &amp; Save Tracker</span>
+              </div>
+              <span class="tracker-live-badge" id="outputTrackerLiveBadge">⚡ Live Sync</span>
+            </div>
+
+            <!-- Live Summary Metrics Bar -->
+            <div class="tracker-summary-grid" id="trackerSummaryGrid">
+              <div class="tracker-stat-box">
+                <span class="stat-label">Total Audios</span>
+                <span class="stat-val" id="trackerStatTotal">0</span>
+              </div>
+              <div class="tracker-stat-box">
+                <span class="stat-label">Processed</span>
+                <span class="stat-val text-cyan" id="trackerStatProcessed">0</span>
+              </div>
+              <div class="tracker-stat-box">
+                <span class="stat-label">Saved</span>
+                <span class="stat-val text-success" id="trackerStatSaved">0</span>
+              </div>
+              <div class="tracker-stat-box">
+                <span class="stat-label">Processing</span>
+                <span class="stat-val text-amber" id="trackerStatProcessing">0</span>
+              </div>
+              <div class="tracker-stat-box">
+                <span class="stat-label">Waiting</span>
+                <span class="stat-val text-muted" id="trackerStatWaiting">0</span>
+              </div>
+              <div class="tracker-stat-box">
+                <span class="stat-label">Failed</span>
+                <span class="stat-val text-danger" id="trackerStatFailed">0</span>
+              </div>
+              <div class="tracker-stat-box wide">
+                <span class="stat-label">Voiceovers Saved</span>
+                <span class="stat-val text-success" id="trackerStatVoiceovers">0 / 0</span>
+              </div>
+              <div class="tracker-stat-box wide">
+                <span class="stat-label">Captions Saved</span>
+                <span class="stat-val text-cyan" id="trackerStatCaptions">0 / 0</span>
+              </div>
+            </div>
+
+            <!-- Per-File Real-Time Tracker Items -->
+            <div class="tracker-files-container" id="trackerFilesContainer">
+              <div class="tracker-empty-state" id="trackerEmptyState">
+                No files in queue. Upload voiceovers to track live saving status.
+              </div>
+              <div class="tracker-list-items" id="trackerListItems">
+                <!-- Dynamically populated per V-number in real time -->
+              </div>
             </div>
           </div>
 
