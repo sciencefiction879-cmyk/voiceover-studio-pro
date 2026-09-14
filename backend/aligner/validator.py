@@ -36,6 +36,7 @@ def extract_numbers(stem: str) -> List[int]:
 
 def strip_common_prefixes(stem: str) -> str:
     s = re.sub(r'^(v|vol|audio|track|episode|ep|chapter|ch|part|voice|file|rec|take)[\s_\-]*', '', stem, flags=re.IGNORECASE)
+    s = re.sub(r'[\s_\-]*(script|dialogue|sub|subtitle|transcript|captions?)$', '', s, flags=re.IGNORECASE)
     s = re.sub(r'[\s_\-]+', ' ', s).strip()
     return s
 

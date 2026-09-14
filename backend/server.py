@@ -372,7 +372,49 @@ def upload_files():
 
     uploaded_files = request.files.getlist("files")
 
-    # Clean old uploads
+    audio_extensions = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
+    script_extensions = {".txt", ".docx", ".srt", ".text"}
+
+    has_audio_uploads = any(
+        os.path.splitext(f.filename)[1].lower() in audio_extensions
+        for f in uploaded_files if f.filename
+    )
+
+    if not has_audio_uploads and STATE["files"]:
+        # Scripts-only upload: Save scripts and auto-link to existing files in queue
+        saved_scripts = []
+        for file in uploaded_files:
+            if not file.filename or file.filename.startswith("."):
+                continue
+            fname = os.path.basename(file.filename)
+            dest_path = os.path.join(UPLOADS_DIR, fname)
+            file.save(dest_path)
+            saved_scripts.append(dest_path)
+
+        linked_count = 0
+        for entry in STATE["files"]:
+            sp = find_matching_script(entry["filePath"], search_dir=UPLOADS_DIR)
+            if sp:
+                entry["hasScript"] = True
+                entry["scriptPath"] = sp
+                entry["scriptFileName"] = os.path.basename(sp)
+                entry["scriptType"] = os.path.splitext(sp)[1].lower()
+                if entry["scriptType"] == ".srt":
+                    entry["hasSrt"] = True
+                    entry["srtPath"] = sp
+                    entry["srtFileName"] = entry["scriptFileName"]
+                linked_count += 1
+
+        add_log(f"Auto-linked {linked_count} uploaded scripts to existing voiceovers.", "info")
+        return jsonify({
+            "success": True,
+            "count": len(STATE["files"]),
+            "files": STATE["files"],
+            "analytics": STATE["analytics"],
+            "scriptsLinked": linked_count
+        })
+
+    # Audio + Script upload: Clean old uploads and index fresh batch
     for f in os.listdir(UPLOADS_DIR):
         try:
             os.remove(os.path.join(UPLOADS_DIR, f))
@@ -386,7 +428,6 @@ def upload_files():
         dest_path = os.path.join(UPLOADS_DIR, fname)
         file.save(dest_path)
 
-    audio_extensions = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
     discovered = [
         os.path.join(UPLOADS_DIR, f)
         for f in os.listdir(UPLOADS_DIR)
@@ -845,6 +886,9 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings):
                     item["processedSrtFileName"] = out_srt_name
                     item["captionValidation"] = caption_res.get("validation", {})
                     item["captionCuesCount"] = caption_res.get("finalCueCount", 0)
+                    item["captionStatus"] = "Cut-Synced ✓"
+                    item["srtStatus"] = "ready"
+                    item["scriptStatus"] = "Provided"
 
                     add_log(
                         f"{base_name}.srt ✓ Forced-aligned & cut-synchronized: {caption_res.get('finalCueCount', 0)} cues matched to voice-over "
@@ -864,14 +908,27 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings):
                 item["errorDetails"] = err
                 item["warningMessage"] = f"Audio processed successfully, but caption alignment failed: {err['reason']}"
                 add_log(f"{base_name} — PARTIAL ⚠: {err['formatted']}", "warning")
+        else:
+            # Script NOT provided in Mode 1 (Audio Processing Mode)
+            # Per core rule: Script is OPTIONAL. Missing script must NEVER block audio processing.
+            item["hasProcessedSrt"] = False
+            item["captionStatus"] = "Skipped"
+            item["srtStatus"] = "skipped"
+            item["scriptStatus"] = "Not provided"
+            item["status"] = "completed"
+            item["statusLabel"] = "SUCCESS ✓"
+            item["errorDetails"] = None
+            item["errorMessage"] = None
+            item["warningMessage"] = None
 
         STATE["processed_files"][orig_name] = item
         STATE["processed_files"][out_name] = item
 
+        cap_summary = f"Captions: {item.get('captionCuesCount', 0)} cues cut-synced ✓" if item.get("hasProcessedSrt") else "Captions: Skipped (no script provided)"
         add_log(
             f"{base_name} — SUCCESS ✓: Processing applied ✓ | Speed ({params['speed_factor']:.3f}x) ✓ | "
             f"Pitch ({params['pitch_semitones']:+.2f}st) ✓ | EQ verified ✓ | Cuts ({res['cutCount']}) verified ✓ | "
-            f"Output generated ✓ | Duration ({item['formattedFinalDuration']}) verified ✓",
+            f"Output generated ✓ | Duration ({item['formattedFinalDuration']}) verified ✓ | {cap_summary}",
             "success"
         )
         return True, orig_name, None
@@ -996,11 +1053,104 @@ def process_batch():
     })
 
 
+@app.route("/api/align-single-srt", methods=["POST"])
+def align_single_srt():
+    """
+    Performs forced alignment and cut-synchronization for an already processed audio file
+    WITHOUT re-running or touching the audio DSP/cuts.
+    """
+    data = request.get_json() or {}
+    file_id = data.get("file_id")
+    file_name = data.get("file_name")
+
+    target = None
+    for f in STATE["files"]:
+        if (file_id and f.get("id") == file_id) or (file_name and f.get("fileName") == file_name):
+            target = f
+            break
+
+    if not target:
+        return jsonify({"success": False, "error": "Target file not found in queue."}), 404
+
+    in_path = target.get("filePath", "")
+    orig_name = target.get("fileName", "")
+    base_name = os.path.splitext(orig_name)[0]
+
+    # Re-scan for matching script (e.g. V1 Script.txt)
+    script_in = target.get("scriptPath") or target.get("srtPath")
+    if not script_in or not os.path.exists(script_in):
+        script_in = find_matching_script(in_path)
+        if script_in:
+            target["hasScript"] = True
+            target["scriptPath"] = script_in
+            target["scriptFileName"] = os.path.basename(script_in)
+            target["scriptType"] = os.path.splitext(script_in)[1].lower()
+
+    if not script_in or not os.path.exists(script_in):
+        err = diagnose_script_error(orig_name, None)
+        return jsonify({"success": False, "error": err}), 400
+
+    out_srt_name = f"{base_name}.srt"
+    out_srt_path = os.path.join(PROCESSED_DIR, out_srt_name)
+
+    speed_val = safe_float(target.get("resolvedParams", {}).get("speed_factor"), 1.0)
+    cuts_list = target.get("cuts", [])
+    final_dur = target.get("finalDuration", target.get("duration", 0.0))
+    caption_mode = STATE.get("caption_mode", "mode1")
+
+    try:
+        add_log(f"⚡ Aligning SRT for {orig_name} from '{target.get('scriptFileName')}' (Audio remains untouched)...", "info")
+        caption_res = process_caption_pipeline(
+            audio_path=in_path,
+            script_path=script_in,
+            output_srt_path=out_srt_path,
+            speed_factor=speed_val if caption_mode == "mode1" else 1.0,
+            cuts=cuts_list if caption_mode == "mode1" else None,
+            target_audio_duration=final_dur,
+            mode=caption_mode,
+            ffmpeg_bin=FFMPEG_PATH
+        )
+
+        if not os.path.exists(out_srt_path) or os.path.getsize(out_srt_path) == 0:
+            err = diagnose_srt_error(out_srt_name, reason_detail=f"{out_srt_name} was not created on disk.")
+            return jsonify({"success": False, "error": err}), 500
+
+        target["hasProcessedSrt"] = True
+        target["processedSrtPath"] = out_srt_path
+        target["processedSrtFileName"] = out_srt_name
+        target["captionValidation"] = caption_res.get("validation", {})
+        target["captionCuesCount"] = caption_res.get("finalCueCount", 0)
+        target["captionStatus"] = "Cut-Synced ✓" if caption_mode == "mode1" else "Aligned ✓"
+        target["srtStatus"] = "ready"
+        target["scriptStatus"] = "Provided"
+        target["errorDetails"] = None
+        target["errorMessage"] = None
+        target["warningMessage"] = None
+
+        if target.get("status") in ("error", "partial"):
+            target["status"] = "completed"
+            target["statusLabel"] = "SUCCESS ✓"
+
+        STATE["processed_files"][orig_name] = target
+        STATE["processed_files"][out_srt_name] = target
+        update_analytics()
+
+        add_log(
+            f"{base_name}.srt ✓ Synchronized SRT created successfully ({caption_res.get('finalCueCount', 0)} cues matched, audio untouched).",
+            "success"
+        )
+        return jsonify({"success": True, "file": target, "analytics": STATE["analytics"]})
+    except Exception as e:
+        err = diagnose_alignment_error(orig_name, os.path.basename(script_in), e)
+        return jsonify({"success": False, "error": err}), 500
+
+
 @app.route("/api/retry-item", methods=["POST"])
 def retry_item():
     """
     Recover an individual failed voiceover item on demand without reprocessing successful files.
     Applies current mode and DSP/alignment settings, validates result on disk, updates analytics.
+    If audio was already processed in Mode 1, runs caption alignment directly without re-processing audio.
     """
     data = request.get_json() or {}
     file_id = data.get("file_id")
@@ -1028,6 +1178,64 @@ def retry_item():
 
     caption_mode = STATE.get("caption_mode", "mode1")
     settings = STATE.get("settings") or STATE.get("master_v1_settings") or {}
+
+    # If audio is already processed in Mode 1, only run caption alignment without re-encoding audio
+    if caption_mode == "mode1" and target.get("hasProcessed") and target.get("processedPath") and os.path.exists(target["processedPath"]):
+        if target.get("hasScript") and target.get("scriptPath") and os.path.exists(target["scriptPath"]):
+            out_srt_name = f"{os.path.splitext(target['fileName'])[0]}.srt"
+            out_srt_path = os.path.join(PROCESSED_DIR, out_srt_name)
+            speed_val = safe_float(target.get("resolvedParams", {}).get("speed_factor"), 1.0)
+            cuts_list = target.get("cuts", [])
+            final_dur = target.get("finalDuration", target.get("duration", 0.0))
+
+            try:
+                caption_res = process_caption_pipeline(
+                    audio_path=in_path,
+                    script_path=target["scriptPath"],
+                    output_srt_path=out_srt_path,
+                    speed_factor=speed_val,
+                    cuts=cuts_list,
+                    target_audio_duration=final_dur,
+                    mode="mode1",
+                    ffmpeg_bin=FFMPEG_PATH
+                )
+
+                if os.path.exists(out_srt_path) and os.path.getsize(out_srt_path) > 0:
+                    target["hasProcessedSrt"] = True
+                    target["processedSrtPath"] = out_srt_path
+                    target["processedSrtFileName"] = out_srt_name
+                    target["captionValidation"] = caption_res.get("validation", {})
+                    target["captionCuesCount"] = caption_res.get("finalCueCount", 0)
+                    target["captionStatus"] = "Cut-Synced ✓"
+                    target["srtStatus"] = "ready"
+                    target["status"] = "completed"
+                    target["statusLabel"] = "SUCCESS ✓"
+                    target["errorDetails"] = None
+                    target["errorMessage"] = None
+                    target["warningMessage"] = None
+
+                    STATE["processed_files"][target["fileName"]] = target
+                    STATE["processed_files"][out_srt_name] = target
+                    update_analytics()
+
+                    add_log(f"{target['fileName']} — SUCCESS ✓: Cut-synchronized SRT generated without re-processing audio.", "success")
+                    return jsonify({
+                        "success": True,
+                        "file": target,
+                        "errorDetails": None,
+                        "statusLabel": "SUCCESS ✓",
+                        "analytics": STATE["analytics"]
+                    })
+            except Exception as e_srt:
+                err = diagnose_alignment_error(target["fileName"], target.get("scriptFileName", "script"), e_srt)
+                target["errorDetails"] = err
+                return jsonify({
+                    "success": False,
+                    "file": target,
+                    "errorDetails": err,
+                    "statusLabel": target.get("statusLabel"),
+                    "analytics": STATE["analytics"]
+                })
 
     add_log(f"↻ Retrying {target['fileName']} ({caption_mode.upper()})...", "info")
     success, fname, err_res = process_single_item_worker(

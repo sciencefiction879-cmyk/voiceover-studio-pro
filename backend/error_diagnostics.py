@@ -99,13 +99,26 @@ def diagnose_script_error(audio_name: str, script_name: Optional[str] = None, ex
     base_name = os.path.splitext(audio_name)[0]
     
     if not script_name:
-        return create_structured_error(
-            category="SCRIPT",
-            target_file=f"{base_name} script",
-            reason=f"{base_name} script is missing.",
-            solution=f"Upload the matching script ({base_name}.txt, {base_name}.docx, or {base_name}.srt) before starting alignment.",
-            raw_error=raw_str
+        expected_script = f"{base_name} Script.txt"
+        cat_title = f"Script Required — {base_name}"
+        reason_msg = f"{expected_script} is required for forced alignment."
+        sol_msg = f"Upload the matching {expected_script} and retry alignment."
+        formatted_msg = (
+            f"{cat_title}\n"
+            f"{reason_msg}\n"
+            f"Possible solution: {sol_msg}"
         )
+        return {
+            "status": "ERROR ✕",
+            "category": cat_title,
+            "targetFile": base_name,
+            "expectedScript": expected_script,
+            "reason": reason_msg,
+            "solution": sol_msg,
+            "canRetry": True,
+            "formatted": formatted_msg,
+            "rawError": raw_str or None
+        }
     
     return create_structured_error(
         category="SCRIPT",

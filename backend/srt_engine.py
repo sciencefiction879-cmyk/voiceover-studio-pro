@@ -441,38 +441,98 @@ def process_srt_file(
 
 def find_matching_script(audio_path: str, search_dir: Optional[str] = None) -> Optional[str]:
     """
-    Find matching script (.txt, .docx, .srt) for a given audio file.
-    Deterministic matching:
-    1. Check exact base name (.txt, .docx, .srt)
-    2. Check case-insensitive base name
-    3. Use aligner.validator deterministic number/stem matching
+    Find matching script (.txt, .docx, .srt, .text) for a given audio file.
+    Supports deterministic matching across multiple naming formats:
+    - 'V1 Script.txt' ↔ 'V1.mp3' (User Primary Format)
+    - 'V1_script.txt' ↔ 'V1.mp3'
+    - 'V1-script.txt' ↔ 'V1.mp3'
+    - 'V1.txt' ↔ 'V1.mp3'
+    - 'V1.docx' ↔ 'V1.mp3'
+    - 'V1.srt' ↔ 'V1.mp3'
     """
-    search_dir = search_dir or os.path.dirname(audio_path)
-    if not os.path.exists(search_dir):
+    search_dirs = []
+    if search_dir and os.path.exists(search_dir):
+        search_dirs.append(search_dir)
+    audio_dir = os.path.dirname(audio_path)
+    if audio_dir and os.path.exists(audio_dir) and audio_dir not in search_dirs:
+        search_dirs.append(audio_dir)
+
+    # Also search uploads folder if available
+    try:
+        from .server import UPLOADS_DIR
+        if UPLOADS_DIR and os.path.exists(UPLOADS_DIR) and UPLOADS_DIR not in search_dirs:
+            search_dirs.append(UPLOADS_DIR)
+    except Exception:
+        pass
+
+    if not search_dirs:
         return None
 
-    audio_stem = os.path.splitext(os.path.basename(audio_path))[0]
+    audio_stem = os.path.splitext(os.path.basename(audio_path))[0].strip()
+    lower_stem = audio_stem.lower()
     supported_exts = {".txt", ".docx", ".srt", ".text"}
 
-    # Priority 1: Exact matches in priority order (.txt, .docx, .srt)
-    for ext in [".txt", ".docx", ".srt", ".text"]:
-        candidate = os.path.join(search_dir, f"{audio_stem}{ext}")
-        if os.path.exists(candidate):
-            return candidate
+    nums = [int(n) for n in re.findall(r'\d+', audio_stem)]
+    primary_num = nums[-1] if nums else None
 
-    # Priority 2: Case-insensitive scan
-    try:
-        entries = os.listdir(search_dir)
-    except Exception:
-        return None
+    # Priority 1 candidate stems: e.g. "V1 Script", "V1_script", "V1", etc.
+    exact_stems = [
+        f"{audio_stem} Script",
+        f"{audio_stem}_script",
+        f"{audio_stem}-script",
+        f"{audio_stem} script",
+        audio_stem,
+        f"{lower_stem} script",
+        f"{lower_stem}_script",
+        f"{lower_stem}-script",
+        lower_stem,
+    ]
+    if primary_num is not None:
+        exact_stems.extend([
+            f"V{primary_num} Script",
+            f"V{primary_num}_script",
+            f"V{primary_num} script",
+            f"v{primary_num} script",
+            f"V{primary_num}",
+            f"v{primary_num}",
+            f"{primary_num} Script",
+            f"{primary_num} script",
+            f"{primary_num}"
+        ])
 
-    lower_stem = audio_stem.lower()
-    for fname in entries:
-        stem, ext = os.path.splitext(fname)
-        if ext.lower() in supported_exts and stem.lower() == lower_stem:
-            return os.path.join(search_dir, fname)
+    for sdir in search_dirs:
+        # Check direct path matches in priority order (.txt, .docx, .srt, .text)
+        for s_stem in exact_stems:
+            for ext in [".txt", ".docx", ".srt", ".text"]:
+                cand = os.path.join(sdir, f"{s_stem}{ext}")
+                if os.path.exists(cand):
+                    return cand
 
-    # Priority 3: Use validator.find_best_script_match
+        # Directory scan (handles case variations and spacing)
+        try:
+            entries = os.listdir(sdir)
+        except Exception:
+            continue
+
+        for fname in entries:
+            fname_stem, ext = os.path.splitext(fname)
+            if ext.lower() not in supported_exts:
+                continue
+
+            clean_fname_stem = fname_stem.strip()
+            norm_fname = re.sub(r'[\s_\-]+', ' ', clean_fname_stem).strip().lower()
+            norm_audio = re.sub(r'[\s_\-]+', ' ', lower_stem).strip().lower()
+
+            if norm_fname == f"{norm_audio} script" or norm_fname == norm_audio:
+                return os.path.join(sdir, fname)
+
+            if primary_num is not None:
+                fname_nums = [int(n) for n in re.findall(r'\d+', fname_stem)]
+                if fname_nums and fname_nums[-1] == primary_num:
+                    if "script" in norm_fname or norm_fname.startswith(f"v{primary_num}") or norm_fname.startswith(f"{primary_num}"):
+                        return os.path.join(sdir, fname)
+
+    # Priority 3: Fallback to aligner.validator
     try:
         try:
             from .aligner.validator import find_best_script_match, normalize_stem, strip_common_prefixes, extract_numbers
@@ -481,19 +541,25 @@ def find_matching_script(audio_path: str, search_dir: Optional[str] = None) -> O
                 from aligner.validator import find_best_script_match, normalize_stem, strip_common_prefixes, extract_numbers
             except (ImportError, ValueError):
                 from backend.aligner.validator import find_best_script_match, normalize_stem, strip_common_prefixes, extract_numbers
-        script_map = {}
-        script_list = []
-        for fname in entries:
-            stem, ext = os.path.splitext(fname)
-            if ext.lower() in supported_exts:
-                full_p = os.path.join(search_dir, fname)
-                norm = normalize_stem(stem)
-                stripped = normalize_stem(strip_common_prefixes(stem))
-                script_map[norm] = full_p
-                script_map[stripped] = full_p
-                script_list.append((stem, full_p, extract_numbers(stem), stripped))
+        for sdir in search_dirs:
+            entries = os.listdir(sdir)
+            script_map = {}
+            script_list = []
+            for fname in entries:
+                stem, ext = os.path.splitext(fname)
+                if ext.lower() in supported_exts:
+                    full_p = os.path.join(sdir, fname)
+                    norm = normalize_stem(stem)
+                    stripped = normalize_stem(strip_common_prefixes(stem))
+                    script_map[norm] = full_p
+                    script_map[stripped] = full_p
+                    script_list.append((stem, full_p, extract_numbers(stem), stripped))
 
-        return find_best_script_match(audio_stem, script_map, script_list)
+            res = find_best_script_match(audio_stem, script_map, script_list)
+            if res:
+                return res
     except Exception:
-        return None
+        pass
+
+    return None
 

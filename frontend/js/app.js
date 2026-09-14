@@ -592,10 +592,14 @@ class VoiceoverApp {
         metaDetails += `<span>&bull;</span><span class="text-cyan" style="font-size:0.68rem;">🛡️ Audio Untouched</span>`;
       }
 
-      // Action Buttons: Download + Retry
+      // Action Buttons: Download + Align SRT + Retry
       let downloadActions = "";
       if (f.status === "error" || f.status === "partial" || (f.errorDetails && f.errorDetails.canRetry)) {
         downloadActions += `<button class="btn-retry-queue" data-id="${f.id}" data-name="${this.escapeHtml(f.fileName)}" title="Retry ${this.escapeHtml(f.fileName)}">↻ Retry</button>`;
+      }
+
+      if (f.hasProcessed && !f.hasProcessedSrt && (f.hasScript || f.hasSrt)) {
+        downloadActions += `<button class="btn-align-srt-item" data-id="${f.id}" data-name="${this.escapeHtml(f.fileName)}" title="Generate Cut-Synced SRT for ${this.escapeHtml(f.fileName)}">⚡ Align SRT</button>`;
       }
 
       if (f.hasProcessed && this.captionMode !== "mode2" && f.captionMode !== "mode2") {
@@ -621,16 +625,24 @@ class VoiceoverApp {
             </div>
           </div>
         </div>
-        <div class="file-item-right">
+        <div class="file-status-wrap">
           <span class="file-status-tag ${statusClass}">${statusText}</span>
           ${downloadActions}
         </div>
       `;
 
       itemDiv.addEventListener("click", (e) => {
-        if (e.target.classList.contains("btn-download-file") || e.target.classList.contains("btn-retry-queue")) return;
+        if (e.target.classList.contains("btn-download-file") || e.target.classList.contains("btn-retry-queue") || e.target.classList.contains("btn-align-srt-item")) return;
         this.selectFile(f);
       });
+
+      const alignBtn = itemDiv.querySelector(".btn-align-srt-item");
+      if (alignBtn) {
+        alignBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          this.alignSingleSrt(alignBtn.dataset.id, alignBtn.dataset.name);
+        });
+      }
 
       const retryBtn = itemDiv.querySelector(".btn-retry-queue");
       if (retryBtn) {
@@ -761,8 +773,8 @@ class VoiceoverApp {
         scriptEl.textContent = `${file.srtFileName}`;
         scriptEl.className = "val text-amber";
       } else {
-        scriptEl.textContent = "None";
-        scriptEl.className = "val";
+        scriptEl.textContent = (this.captionMode === "mode2") ? "Missing (Required)" : "Not provided (Optional)";
+        scriptEl.className = (this.captionMode === "mode2") ? "val text-danger" : "val text-muted";
       }
     }
 
@@ -771,7 +783,7 @@ class VoiceoverApp {
     if (capEl) {
       if (file.hasProcessedSrt) {
         const countTxt = file.captionCuesCount ? ` (${file.captionCuesCount} cues)` : '';
-        capEl.textContent = `✓ Synced${countTxt}`;
+        capEl.textContent = `✓ Cut-Synced${countTxt}`;
         capEl.className = "val text-success";
       } else if (file.captionInfo && file.captionInfo.success) {
         capEl.textContent = `✓ Preview Synced (${file.captionInfo.cuesCount} cues)`;
@@ -780,8 +792,23 @@ class VoiceoverApp {
         capEl.textContent = "Ready for alignment";
         capEl.className = "val text-amber";
       } else {
-        capEl.textContent = "No script provided";
-        capEl.className = "val text-muted";
+        capEl.textContent = (this.captionMode === "mode2") ? "Blocked (Script required)" : "Skipped";
+        capEl.className = (this.captionMode === "mode2") ? "val text-danger" : "val text-muted";
+      }
+    }
+
+    // Inspector Actions Row: e.g. Align SRT separately if audio processed but SRT pending
+    const actionsRow = document.getElementById("inspectorActionsRow");
+    const btnAlignSrt = document.getElementById("btnAlignSingleSrt");
+    if (actionsRow && btnAlignSrt) {
+      if (file.hasProcessed && !file.hasProcessedSrt && (file.hasScript || file.hasSrt)) {
+        actionsRow.style.display = "flex";
+        btnAlignSrt.onclick = (e) => {
+          e.stopPropagation();
+          this.alignSingleSrt(file.id, file.fileName);
+        };
+      } else {
+        actionsRow.style.display = "none";
       }
     }
 
@@ -963,6 +990,50 @@ class VoiceoverApp {
         item.status = "error";
         this.renderFileList();
       }
+    }
+  }
+
+  async alignSingleSrt(fileId, fileName) {
+    this.addLog(`⚡ Aligning cut-synchronized SRT for ${fileName}...`, "info");
+    const item = this.files.find(f => f.id === fileId || f.fileName === fileName);
+    if (item) {
+      item.statusLabel = "Aligning SRT...";
+      this.renderFileList();
+    }
+
+    try {
+      const res = await fetch("/api/align-single-srt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file_id: fileId, file_name: fileName })
+      });
+      const data = await res.json();
+      if (data.success && data.file) {
+        const updated = data.file;
+        const idx = this.files.findIndex(f => f.id === updated.id);
+        if (idx !== -1) {
+          this.files[idx] = updated;
+        }
+        if (this.selectedFile?.id === updated.id) {
+          this.selectedFile = updated;
+          this.updateInspectorCard(updated);
+        }
+        this.renderFileList();
+        if (data.analytics) {
+          this.analytics = data.analytics;
+          this.updateAnalyticsUI(data.analytics);
+        }
+        this.addLog(`✓ ${fileName}.srt successfully created & synchronized (${updated.captionCuesCount || 0} cues).`, "success");
+      } else {
+        const err = data.error || {};
+        this.addLog(`${fileName} SRT alignment notice: ${err.reason || err.formatted || 'Script alignment failed.'}`, "error");
+        if (this.selectedFile && (this.selectedFile.id === fileId || this.selectedFile.fileName === fileName)) {
+          this.selectedFile.errorDetails = err;
+          this.updateInspectorCard(this.selectedFile);
+        }
+      }
+    } catch (e) {
+      this.addLog(`Network error aligning SRT for ${fileName}: ${e.message}`, "error");
     }
   }
 
