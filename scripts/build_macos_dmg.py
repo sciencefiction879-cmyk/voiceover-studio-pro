@@ -123,20 +123,19 @@ def build_app():
     launcher_path = os.path.join(macos_dir, "VoiceoverStudio")
     launcher_script = '''#!/bin/bash
 DIR="$(cd "$(dirname "$0")/../Resources" && pwd)"
-export PATH="$DIR/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH="$DIR/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
-# Point to bundled site-packages and backend
-export PYTHONPATH="$DIR/backend:$DIR/site-packages:$PYTHONPATH"
+# Pure self-contained bundle environment: isolated from external venvs
+export PYTHONPATH="$DIR/backend:$DIR/site-packages"
+export PYTHONNOUSERSITE=1
 
-# Locate Python 3 interpreter
-if [ -x "/Users/shaddo/Documents/antigravity/copyright audio editor/.venv/bin/python" ]; then
-    PYTHON_EXEC="/Users/shaddo/Documents/antigravity/copyright audio editor/.venv/bin/python"
-elif [ -x "$DIR/../../.venv/bin/python" ]; then
-    PYTHON_EXEC="$DIR/../../.venv/bin/python"
+# Locate standard Python 3 interpreter (fully self-contained, no external venv dependencies)
+if [ -x "/usr/bin/python3" ]; then
+    PYTHON_EXEC="/usr/bin/python3"
 elif [ -x "/opt/homebrew/bin/python3" ]; then
     PYTHON_EXEC="/opt/homebrew/bin/python3"
-elif [ -x "/usr/bin/python3" ]; then
-    PYTHON_EXEC="/usr/bin/python3"
+elif [ -x "/usr/local/bin/python3" ]; then
+    PYTHON_EXEC="/usr/local/bin/python3"
 elif command -v python3 >/dev/null 2>&1; then
     PYTHON_EXEC="$(command -v python3)"
 else
@@ -144,7 +143,7 @@ else
 fi
 
 cd "$DIR"
-exec "$PYTHON_EXEC" "$DIR/backend/desktop_app.py"
+exec "$PYTHON_EXEC" -s "$DIR/backend/desktop_app.py"
 '''
     with open(launcher_path, "w", encoding="utf-8") as f:
         f.write(launcher_script)

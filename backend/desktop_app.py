@@ -62,8 +62,17 @@ def main():
 
     # Launch native WebKit desktop window
     try:
+        if sys.platform == "darwin":
+            try:
+                from AppKit import NSApplication, NSApplicationActivationPolicyRegular
+                app_instance = NSApplication.sharedApplication()
+                app_instance.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+                app_instance.activateIgnoringOtherApps_(True)
+            except Exception as e_cocoa:
+                print(f"Cocoa activation notice: {e_cocoa}", flush=True)
+
         import webview
-        print("🚀 Launching native macOS WebKit window...")
+        print("🚀 Launching native macOS WebKit window...", flush=True)
         window = webview.create_window(
             title="Voiceover Studio Pro",
             url=server_url,
@@ -76,8 +85,8 @@ def main():
         )
         webview.start(debug=False)
     except Exception as e:
-        print(f"Native window fallback: {e}. Opening browser...")
-        webbrowser.open(server_url)
+        print(f"Native window error: {e}", flush=True)
+        # Keep process alive without forcing web browser opening
         try:
             while True:
                 time.sleep(1)
