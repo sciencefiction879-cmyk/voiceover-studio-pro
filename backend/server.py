@@ -68,10 +68,38 @@ app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path="")
 CORS(app)
 
 # Workspace directories
-UPLOADS_DIR = os.path.join(BASE_DIR, "data", "uploads")
-PROCESSED_DIR = os.path.join(BASE_DIR, "data", "processed")
-PREVIEWS_DIR = os.path.join(BASE_DIR, "data", "previews")
-EXPORTS_DIR = os.path.join(BASE_DIR, "data", "exports")
+def _resolve_data_dir() -> str:
+    """
+    Resolve a writable directory for uploads, previews, processed files, and exports.
+    If BASE_DIR/data is writable (e.g. during development or portable install), use it.
+    If BASE_DIR is read-only (e.g. running directly from macOS .dmg or /Applications bundle),
+    transparently fallback to standard user application support directory.
+    """
+    local_data = os.path.join(BASE_DIR, "data")
+    try:
+        os.makedirs(local_data, exist_ok=True)
+        test_file = os.path.join(local_data, ".write_test")
+        with open(test_file, "w") as f:
+            f.write("test")
+        os.remove(test_file)
+        return local_data
+    except Exception:
+        home = os.path.expanduser("~")
+        if sys.platform == "darwin":
+            user_data = os.path.join(home, "Library", "Application Support", "VoiceoverStudioPro", "data")
+        elif sys.platform == "win32":
+            appdata = os.environ.get("APPDATA", home)
+            user_data = os.path.join(appdata, "VoiceoverStudioPro", "data")
+        else:
+            user_data = os.path.join(home, ".voiceover_studio", "data")
+        os.makedirs(user_data, exist_ok=True)
+        return user_data
+
+DATA_ROOT = _resolve_data_dir()
+UPLOADS_DIR = os.path.join(DATA_ROOT, "uploads")
+PROCESSED_DIR = os.path.join(DATA_ROOT, "processed")
+PREVIEWS_DIR = os.path.join(DATA_ROOT, "previews")
+EXPORTS_DIR = os.path.join(DATA_ROOT, "exports")
 
 for d in [UPLOADS_DIR, PROCESSED_DIR, PREVIEWS_DIR, EXPORTS_DIR]:
     os.makedirs(d, exist_ok=True)
