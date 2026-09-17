@@ -86,8 +86,10 @@ def main():
         webview.start(debug=False)
     except Exception as e:
         print(f"Native window error: {e}", flush=True)
-        # Keep process alive without forcing web browser opening
+        # Automatic fallback to system browser if WebView2 or WebKit fails
         try:
+            print(f"🌐 Launching interface in default browser: {server_url}...", flush=True)
+            webbrowser.open(server_url)
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:

@@ -13,28 +13,46 @@ added_files = [
 if os.path.exists('bin'):
     added_files.append(('bin', 'bin'))
 
+try:
+    from PyInstaller.utils.hooks import collect_all
+    wv_datas, wv_binaries, wv_hidden = collect_all('webview')
+except Exception:
+    wv_datas, wv_binaries, wv_hidden = [], [], []
+
+added_files.extend(wv_datas)
+
+extra_hidden = [
+    'flask',
+    'flask_cors',
+    'webview',
+    'numpy',
+    'werkzeug',
+    'jinja2',
+    'click',
+    'clr',
+    'pythonnet',
+    'webview.platforms.winforms',
+    'webview.platforms.edgechromium',
+    'webview.platforms.edgehtml',
+    'backend.server',
+    'backend.audio_engine',
+    'backend.srt_engine',
+    'backend.error_diagnostics',
+    'backend.aligner.pipeline',
+    'backend.aligner.engine',
+    'backend.aligner.validator',
+    'backend.aligner.srt_builder',
+    'backend.aligner.audio_utils',
+    'backend.aligner.checkpoint',
+]
+extra_hidden.extend(wv_hidden)
+
 a = Analysis(
     ['backend/desktop_app.py'],
     pathex=['backend', '.'],
-    binaries=[],
+    binaries=wv_binaries,
     datas=added_files,
-    hiddenimports=[
-        'flask',
-        'flask_cors',
-        'webview',
-        'numpy',
-        'werkzeug',
-        'backend.server',
-        'backend.audio_engine',
-        'backend.srt_engine',
-        'backend.error_diagnostics',
-        'backend.aligner.pipeline',
-        'backend.aligner.engine',
-        'backend.aligner.validator',
-        'backend.aligner.srt_builder',
-        'backend.aligner.audio_utils',
-        'backend.aligner.checkpoint',
-    ],
+    hiddenimports=list(set(extra_hidden)),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
