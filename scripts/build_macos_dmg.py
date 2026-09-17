@@ -26,11 +26,10 @@ def build_app():
     print(f"===========================================================")
 
     # Ensure clean dist directory
-    if os.path.exists(DIST_DIR):
-        shutil.rmtree(DIST_DIR)
     os.makedirs(DIST_DIR, exist_ok=True)
-
     app_dir = os.path.join(DIST_DIR, APP_BUNDLE_NAME)
+    if os.path.exists(app_dir):
+        shutil.rmtree(app_dir)
     contents_dir = os.path.join(app_dir, "Contents")
     macos_dir = os.path.join(contents_dir, "MacOS")
     resources_dir = os.path.join(contents_dir, "Resources")
@@ -62,9 +61,9 @@ def build_app():
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.4.1</string>
+    <string>0.4.3</string>
     <key>CFBundleVersion</key>
-    <string>0.4.1</string>
+    <string>0.4.3</string>
 
 
     <key>LSMinimumSystemVersion</key>

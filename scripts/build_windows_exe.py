@@ -14,7 +14,7 @@ import urllib.request
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 BIN_DIR = os.path.join(PROJECT_ROOT, "bin")
 DIST_DIR = os.path.join(PROJECT_ROOT, "dist")
-VERSION = "0.4.1"
+VERSION = "0.4.3"
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DIST_DIR = os.path.join(PROJECT_ROOT, "dist")
 ASSETS_DIR = os.path.join(PROJECT_ROOT, "assets")

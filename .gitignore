@@ -30,6 +30,7 @@ data/previews/**
 data/exports/**
 !data/exports/
 !data/exports/.gitkeep
+data/*.json
 
 # macOS
 .DS_Store

@@ -10,7 +10,7 @@ import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 
 from flask import Flask, request, jsonify, send_file, Response, send_from_directory
 from flask_cors import CORS
@@ -35,9 +35,14 @@ from srt_engine import (
     parse_srt_file,
     process_caption_pipeline,
     find_matching_script,
-    validate_caption_sync
+    validate_caption_sync,
+    extract_v_number,
+    extract_canonical_v_label,
+    match_audio_and_script_lists
 )
 from gemini_engine import KEY_MANAGER, analyze_audio_with_gemini
+
+APP_VERSION = "0.4.3"
 from error_diagnostics import (
     diagnose_audio_error,
     diagnose_script_error,
@@ -117,7 +122,9 @@ def format_human_duration(seconds: float) -> str:
 
 # Global State
 STATE = {
-    "files": [],               # List of loaded file metadata
+    "files": [],               # List of loaded file metadata (sorted naturally by V-number)
+    "orphan_scripts": [],      # List of script files with no matching audio
+    "available_scripts": {},   # Known scripts cache {path: metadata}
     "settings": {},            # Current DSP & cut settings
     "is_processing": False,    # Processing flag
     "current_file": None,      # Active file(s) being processed
@@ -134,6 +141,9 @@ STATE = {
     "analytics": {
         "totalFiles": 0,
         "totalAudios": 0,
+        "orphanScriptsCount": 0,
+        "matchedScriptsCount": 0,
+        "missingScriptsCount": 0,
         "processedFiles": 0,
         "processedCount": 0,
         "remainingFiles": 0,
@@ -179,18 +189,30 @@ def add_log(message: str, level: str = "info"):
 
 
 def natural_sort_key(s: str):
-    """Natural sort key to sort 'V1, V2, V10' correctly."""
-    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s)]
+    """
+    Natural sort key that correctly sorts numbered files like:
+    V1, V2, V10, V20, V21, V101.
+    Prioritizes the actual extracted V-number so V2 always precedes V10.
+    """
+    v_num = extract_v_number(s)
+    tokens = [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s)]
+    if v_num is not None:
+        return (0, v_num, tokens)
+    return (1, 999999, tokens)
 
 
 def update_analytics():
     """Recalculate batch and lifecycle analytics from STATE."""
     files = STATE["files"]
     total = len(files)
-    completed = [f for f in files if f.get("status") == "completed"]
-    failed = [f for f in files if f.get("status") == "error"]
-    partial = [f for f in files if f.get("status") == "partial"]
     mode = STATE.get("caption_mode", "mode1")
+
+    completed = [
+        f for f in files
+        if f.get("status") == "completed" or (mode != "mode2" and f.get("voiceoverStatus") == "saved") or (mode == "mode2" and f.get("captionStatus") == "saved")
+    ]
+    failed = [f for f in files if f.get("status") == "error" or f.get("voiceoverStatus") == "failed" or f.get("captionStatus") == "failed"]
+    partial = [f for f in files if f.get("status") == "partial"]
     
     orig_secs = sum(safe_float(f.get("duration"), 0.0) for f in files)
     proc_secs = sum(safe_float(f.get("finalDuration"), safe_float(f.get("duration"), 0.0)) for f in completed)
@@ -222,9 +244,9 @@ def update_analytics():
         }
     else:
         # Mode 1
-        mp3_count = sum(1 for f in files if f.get("hasProcessed"))
-        srt_count = sum(1 for f in files if f.get("hasProcessedSrt"))
-        val_count = sum(1 for f in files if f.get("status") == "completed" and f.get("hasProcessed"))
+        mp3_count = sum(1 for f in files if f.get("hasProcessed") or f.get("voiceoverStatus") == "saved")
+        srt_count = sum(1 for f in files if f.get("hasProcessedSrt") or f.get("captionStatus") == "saved")
+        val_count = len(completed)
         final_report = {
             "mode": "mode1",
             "total": total,
@@ -249,14 +271,21 @@ def update_analytics():
     saved_voiceovers = sum(1 for f in files if f.get("voiceoverStatus") == "saved" or (f.get("realtimeSavedMp3") and os.path.exists(f.get("realtimeSavedMp3"))))
     saved_captions = sum(1 for f in files if f.get("captionStatus") == "saved" or (f.get("realtimeSavedSrt") and os.path.exists(f.get("realtimeSavedSrt"))))
     processing_count = sum(1 for f in files if f.get("status") == "processing" or f.get("voiceoverStatus") == "processing" or f.get("captionStatus") == "processing")
-    waiting_count = sum(1 for f in files if f.get("status") in ("queued", "waiting", "ready", None, "") and not f.get("hasProcessed") and not f.get("hasProcessedSrt") and f.get("status") != "error")
+    waiting_count = max(0, total - len(completed) - len(failed) - len(partial) - processing_count)
+
+    matched_scripts = sum(1 for f in files if f.get("hasScript"))
+    missing_scripts = sum(1 for f in files if not f.get("hasScript"))
+    orphan_count = len(STATE.get("orphan_scripts", []))
 
     STATE["analytics"] = {
         "totalFiles": total,
         "totalAudios": total,
-        "processedFiles": processed_count,
+        "orphanScriptsCount": orphan_count,
+        "matchedScriptsCount": matched_scripts,
+        "missingScriptsCount": missing_scripts,
+        "processedFiles": len(completed) + len(partial) + len(failed),
         "processedCount": len(completed) + len(partial),
-        "remainingFiles": max(0, total - processed_count),
+        "remainingFiles": max(0, total - len(completed) - len(partial)),
         "savedCount": saved_voiceovers,
         "processingCount": processing_count,
         "waitingCount": waiting_count,
@@ -387,6 +416,245 @@ def ensure_output_subfolders(folder_path: str) -> Dict[str, str]:
     }
 
 
+SESSION_FILE = os.path.join(DATA_ROOT, "session_state.json")
+
+
+def save_session_state():
+    """Atomically save current session and file processing progress to disk."""
+    try:
+        data = {
+            "version": "2.4",
+            "saved_at": time.time(),
+            "saved_at_human": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "output_folder": STATE.get("output_folder"),
+            "output_subfolders": STATE.get("output_subfolders", {}),
+            "caption_mode": STATE.get("caption_mode", "mode1"),
+            "batch_size": STATE.get("batch_size", 3),
+            "settings": STATE.get("settings", {}),
+            "master_v1_settings": STATE.get("master_v1_settings", {}),
+            "is_processing": STATE.get("is_processing", False),
+            "current_batch": STATE.get("current_batch", 0),
+            "files": STATE.get("files", []),
+            "orphan_scripts": STATE.get("orphan_scripts", [])
+        }
+        temp_file = SESSION_FILE + ".tmp"
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(temp_file, SESSION_FILE)
+    except Exception as e:
+        print(f"Notice: Failed to persist session state: {e}")
+
+
+def load_session_state() -> bool:
+    """Load session state from disk if available."""
+    if not os.path.exists(SESSION_FILE):
+        return False
+    try:
+        with open(SESSION_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not data or not isinstance(data, dict):
+            return False
+        
+        saved_files = data.get("files", [])
+        if saved_files and not STATE.get("files"):
+            STATE["files"] = saved_files
+            STATE["orphan_scripts"] = data.get("orphan_scripts", [])
+            if data.get("output_folder"):
+                STATE["output_folder"] = data["output_folder"]
+                STATE["output_subfolders"] = data.get("output_subfolders", {})
+            if data.get("caption_mode"):
+                STATE["caption_mode"] = data["caption_mode"]
+            if data.get("batch_size"):
+                STATE["batch_size"] = data["batch_size"]
+            if data.get("master_v1_settings"):
+                STATE["master_v1_settings"] = data["master_v1_settings"]
+            
+            STATE["is_processing"] = False
+            STATE["current_file"] = None
+            STATE["active_batch_files"] = []
+            
+            detect_batch_progress()
+            update_analytics()
+            add_log("Restored previous session progress from disk.", "info")
+            return True
+        elif data.get("orphan_scripts") and not STATE.get("orphan_scripts"):
+            STATE["orphan_scripts"] = data.get("orphan_scripts", [])
+    except Exception as e:
+        print(f"Notice: Failed to load session state: {e}")
+    return False
+
+
+def validate_existing_output_for_item(item: Dict[str, Any], output_folder: Optional[str] = None, caption_mode: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Validates whether an item has already been successfully processed and written to disk
+    in the selected destination folder (Selected Folder/Voiceover/ and Caption/).
+    Adheres strictly to the user requirement:
+    - Voiceover/V{N}.mp3 must exist and be valid (> 1KB)
+    - Caption/V{N}.srt must exist and be valid (> 0 bytes) if script was provided or in Mode 2
+    - If no script was provided in Mode 1, audio completion alone satisfies completion
+    """
+    if not output_folder:
+        output_folder = STATE.get("output_folder")
+    if not caption_mode:
+        caption_mode = STATE.get("caption_mode", "mode1")
+
+    orig_name = item.get("fileName", "")
+    base_name = os.path.splitext(orig_name)[0]
+    
+    result = {
+        "is_completed": False,
+        "voiceover_valid": False,
+        "caption_valid": False,
+        "expected_mp3": None,
+        "expected_srt": None,
+        "reason": ""
+    }
+
+    if not output_folder or not os.path.exists(output_folder):
+        result["reason"] = "Output folder not set or does not exist."
+        return result
+
+    try:
+        subdirs = ensure_output_subfolders(output_folder)
+        expected_mp3 = os.path.join(subdirs["voiceover_dir"], f"{base_name}.mp3")
+        expected_srt = os.path.join(subdirs["caption_dir"], f"{base_name}.srt")
+        result["expected_mp3"] = expected_mp3
+        result["expected_srt"] = expected_srt
+
+        # 1. Voiceover validation
+        if caption_mode == "mode2":
+            result["voiceover_valid"] = True
+        else:
+            if os.path.exists(expected_mp3) and os.path.getsize(expected_mp3) > 1024:
+                result["voiceover_valid"] = True
+            elif item.get("processedPath") and os.path.exists(item["processedPath"]) and os.path.getsize(item["processedPath"]) > 1024:
+                try:
+                    shutil.copy2(item["processedPath"], expected_mp3)
+                    result["voiceover_valid"] = os.path.exists(expected_mp3)
+                except Exception:
+                    result["voiceover_valid"] = False
+
+        # 2. Caption validation
+        has_script = item.get("hasScript") or bool(item.get("scriptPath") and os.path.exists(item["scriptPath"]))
+        if not has_script:
+            found_script = find_matching_script(item.get("filePath", ""))
+            if found_script:
+                has_script = True
+                item["hasScript"] = True
+                item["scriptPath"] = found_script
+
+        if caption_mode == "mode2":
+            if os.path.exists(expected_srt) and os.path.getsize(expected_srt) > 0:
+                result["caption_valid"] = True
+            elif item.get("processedSrtPath") and os.path.exists(item["processedSrtPath"]) and os.path.getsize(item["processedSrtPath"]) > 0:
+                try:
+                    shutil.copy2(item["processedSrtPath"], expected_srt)
+                    result["caption_valid"] = os.path.exists(expected_srt)
+                except Exception:
+                    result["caption_valid"] = False
+        else:
+            if has_script:
+                if os.path.exists(expected_srt) and os.path.getsize(expected_srt) > 0:
+                    result["caption_valid"] = True
+                elif item.get("processedSrtPath") and os.path.exists(item["processedSrtPath"]) and os.path.getsize(item["processedSrtPath"]) > 0:
+                    try:
+                        shutil.copy2(item["processedSrtPath"], expected_srt)
+                        result["caption_valid"] = os.path.exists(expected_srt)
+                    except Exception:
+                        result["caption_valid"] = False
+            else:
+                result["caption_valid"] = True
+
+        result["is_completed"] = bool(result["voiceover_valid"] and result["caption_valid"])
+        return result
+    except Exception as e:
+        result["reason"] = str(e)
+        return result
+
+
+def detect_batch_progress(output_folder: Optional[str] = None, caption_mode: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Inspects all files in queue against physical outputs on disk.
+    Marks validated existing files as 'completed' and 'saved'.
+    Identifies the first incomplete file (e.g. V4) to enable seamless resumption.
+    """
+    if not output_folder:
+        output_folder = STATE.get("output_folder")
+    if not caption_mode:
+        caption_mode = STATE.get("caption_mode", "mode1")
+
+    files = STATE.get("files", [])
+    total = len(files)
+    completed_count = 0
+    first_incomplete_idx = None
+    first_incomplete_label = None
+
+    for idx, item in enumerate(files):
+        v_label = extract_canonical_v_label(item.get("fileName", f"V{idx+1}"))
+
+        val = validate_existing_output_for_item(item, output_folder=output_folder, caption_mode=caption_mode)
+        if val["is_completed"]:
+            item["status"] = "completed"
+            item["statusLabel"] = "SUCCESS ✓"
+            if caption_mode == "mode2":
+                item["voiceoverStatus"] = "untouched"
+            else:
+                item["voiceoverStatus"] = "saved"
+                item["hasProcessed"] = True
+                item["processedPath"] = val["expected_mp3"]
+                item["realtimeSavedMp3"] = val["expected_mp3"]
+                item["voiceoverSavedPath"] = val["expected_mp3"]
+
+            if val["caption_valid"] and val.get("expected_srt") and os.path.exists(val["expected_srt"]):
+                item["captionStatus"] = "saved"
+                item["hasProcessedSrt"] = True
+                item["processedSrtPath"] = val["expected_srt"]
+                item["realtimeSavedSrt"] = val["expected_srt"]
+                item["captionSavedPath"] = val["expected_srt"]
+            elif not item.get("hasScript"):
+                item["captionStatus"] = "skipped"
+
+            item["isReused"] = True
+            item["errorDetails"] = None
+            item["errorMessage"] = None
+            item["voiceoverError"] = None
+            item["captionError"] = None
+            completed_count += 1
+        else:
+            item["isReused"] = False
+            if first_incomplete_idx is None:
+                first_incomplete_idx = idx
+                first_incomplete_label = v_label
+            if item.get("status") not in ("processing", "error"):
+                item["status"] = "ready"
+                item["voiceoverStatus"] = "waiting"
+                item["captionStatus"] = "waiting" if item.get("hasScript") else "skipped"
+
+    incomplete_count = total - completed_count
+    can_resume = bool(completed_count > 0 and incomplete_count > 0)
+    all_completed = bool(total > 0 and completed_count == total)
+    first_seq_label = extract_canonical_v_label(files[0]["fileName"]) if files else "V1"
+    last_seq_label = extract_canonical_v_label(files[-1]["fileName"]) if files else "V1"
+
+    progress_summary = {
+        "total": total,
+        "completedCount": completed_count,
+        "incompleteCount": incomplete_count,
+        "firstIncompleteIndex": first_incomplete_idx,
+        "firstIncompleteLabel": first_incomplete_label or (first_seq_label if total else "V1"),
+        "firstLabel": first_seq_label,
+        "lastLabel": last_seq_label,
+        "canResume": can_resume,
+        "allCompleted": all_completed,
+        "outputFolder": output_folder
+    }
+
+    STATE["resume_info"] = progress_summary
+    update_analytics()
+    save_session_state()
+    return progress_summary
+
+
 @app.route("/api/browse-folder", methods=["POST"])
 def browse_folder():
     """Open native macOS folder picker dialog using osascript."""
@@ -415,14 +683,18 @@ def browse_output_folder():
         subdirs = ensure_output_subfolders(selected_path)
         STATE["output_folder"] = subdirs["parent_dir"]
         STATE["output_subfolders"] = subdirs
+        resume_summary = detect_batch_progress(subdirs["parent_dir"])
         add_log(f"Destination folder selected: {subdirs['parent_dir']}", "info")
-        add_log(f"  ├── Voiceover/ folder created & ready ✓", "info")
-        add_log(f"  └── Caption/ folder created & ready ✓", "info")
+        add_log(f"  ├── Voiceover/ folder: {subdirs['voiceover_dir']} ✓", "info")
+        add_log(f"  └── Caption/ folder: {subdirs['caption_dir']} ✓", "info")
+        if resume_summary.get("canResume"):
+            add_log(f"⚡ Detected {resume_summary['completedCount']} previously completed files in output folder. Resumable from {resume_summary['firstIncompleteLabel']}!", "success")
         return jsonify({
             "success": True,
             "path": subdirs["parent_dir"],
             "voiceover_dir": subdirs["voiceover_dir"],
-            "caption_dir": subdirs["caption_dir"]
+            "caption_dir": subdirs["caption_dir"],
+            "resumeInfo": resume_summary
         })
 
     return jsonify({"success": False, "message": "Folder selection cancelled or unavailable."})
@@ -443,22 +715,160 @@ def set_output_folder():
         subdirs = ensure_output_subfolders(folder_path)
         STATE["output_folder"] = subdirs["parent_dir"]
         STATE["output_subfolders"] = subdirs
+        resume_summary = detect_batch_progress(subdirs["parent_dir"])
         add_log(f"Destination folder configured: {subdirs['parent_dir']}", "info")
-        add_log(f"  ├── Voiceover/ folder created & ready ✓", "info")
-        add_log(f"  └── Caption/ folder created & ready ✓", "info")
+        add_log(f"  ├── Voiceover/ folder: {subdirs['voiceover_dir']} ✓", "info")
+        add_log(f"  └── Caption/ folder: {subdirs['caption_dir']} ✓", "info")
+        if resume_summary.get("canResume"):
+            add_log(f"⚡ Detected {resume_summary['completedCount']} previously completed files. Resumable from {resume_summary['firstIncompleteLabel']}!", "success")
         return jsonify({
             "success": True,
             "path": subdirs["parent_dir"],
             "voiceover_dir": subdirs["voiceover_dir"],
-            "caption_dir": subdirs["caption_dir"]
+            "caption_dir": subdirs["caption_dir"],
+            "resumeInfo": resume_summary
         })
     except Exception as e:
         return jsonify({"success": False, "error": f"Failed to set output folder: {e}"}), 400
 
 
 @app.route("/api/scan-folder", methods=["POST"])
+def sync_and_match_state(
+    audio_paths: List[str],
+    script_candidates: List[str],
+    folder_context: Optional[str] = None
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Bi-directionally match audio files and script files:
+    - Sorts audio files naturally by extracted V-number (e.g. V2 < V10, V20 < V21 < V101).
+    - Pairs each audio with its corresponding script file using V-number.
+    - Accurately identifies orphan scripts (scripts without matching audio).
+    - Preserves existing processing state/progress for files already in queue.
+    - Sets explicit matchStatus:
+      - 'V20.mp3 ↔ V20 Script.txt ✓ Matched'
+      - 'V23.mp3 — Script not found ⚠'
+      - For orphans: 'V24 Script.txt — Audio not found ⚠'
+    """
+    unique_audios = []
+    seen_audios = set()
+    for ap in audio_paths:
+        if ap and os.path.exists(ap):
+            norm_ap = os.path.abspath(ap)
+            if norm_ap not in seen_audios:
+                unique_audios.append(norm_ap)
+                seen_audios.add(norm_ap)
+
+    unique_audios.sort(key=lambda p: natural_sort_key(os.path.basename(p)))
+
+    all_scripts = set()
+    for sp in script_candidates:
+        if sp and os.path.exists(sp):
+            all_scripts.add(os.path.abspath(sp))
+
+    # Also include any existing scripts in UPLOADS_DIR
+    try:
+        if os.path.exists(UPLOADS_DIR):
+            supported_exts = {".txt", ".docx", ".srt", ".text"}
+            for f in os.listdir(UPLOADS_DIR):
+                if not f.startswith("."):
+                    ext = os.path.splitext(f)[1].lower()
+                    if ext in supported_exts:
+                        all_scripts.add(os.path.abspath(os.path.join(UPLOADS_DIR, f)))
+    except Exception:
+        pass
+
+    # Also search folder_context if provided
+    if folder_context and os.path.exists(folder_context):
+        try:
+            supported_exts = {".txt", ".docx", ".srt", ".text"}
+            for root, _, files in os.walk(folder_context):
+                for f in files:
+                    if not f.startswith("."):
+                        ext = os.path.splitext(f)[1].lower()
+                        if ext in supported_exts:
+                            all_scripts.add(os.path.abspath(os.path.join(root, f)))
+        except Exception:
+            pass
+
+    matches, orphan_scripts = match_audio_and_script_lists(unique_audios, list(all_scripts))
+
+    existing_by_path = {f.get("filePath"): f for f in STATE.get("files", []) if f.get("filePath")}
+    existing_by_name = {f.get("fileName"): f for f in STATE.get("files", []) if f.get("fileName")}
+
+    file_entries = []
+    for idx, fpath in enumerate(unique_audios):
+        meta = get_audio_metadata(fpath)
+        orig_name = meta["fileName"]
+        base_item = existing_by_path.get(fpath) or existing_by_name.get(orig_name) or {}
+
+        cut_schedule = calculate_cut_schedule(meta["duration"])
+        script_path = matches.get(fpath)
+        has_script = bool(script_path and os.path.exists(script_path))
+        script_name = os.path.basename(script_path) if has_script else None
+        script_ext = os.path.splitext(script_name)[1].lower() if script_name else None
+        has_srt = (script_ext == ".srt")
+        srt_path = script_path if has_srt else None
+
+        v_num = extract_v_number(orig_name)
+        v_label = extract_canonical_v_label(orig_name)
+        match_status = f"{orig_name} ↔ {script_name} ✓ Matched" if has_script else f"{orig_name} — Script not found ⚠"
+
+        entry = {
+            "id": base_item.get("id") or f"file_{idx+1}",
+            "index": idx + 1,
+            "vNumber": v_num,
+            "vLabel": v_label,
+            "fileName": orig_name,
+            "filePath": fpath,
+            "duration": meta["duration"],
+            "formattedDuration": meta["formattedDuration"],
+            "sizeBytes": meta["sizeBytes"],
+            "bitrate": meta["bitrate"],
+            "sampleRate": meta["sampleRate"],
+            "channels": meta["channels"],
+            "codec": meta["codec"],
+            "hasCuts": len(cut_schedule["cuts"]) > 0,
+            "cutCount": len(cut_schedule["cuts"]),
+            "estimatedProcessedDuration": cut_schedule["finalEstimatedDuration"],
+            "formattedEstimatedDuration": cut_schedule.get("formattedFinalDuration", ""),
+            "status": base_item.get("status", "ready"),
+            "statusLabel": base_item.get("statusLabel", "Ready"),
+            "voiceoverStatus": base_item.get("voiceoverStatus", "waiting"),
+            "captionStatus": base_item.get("captionStatus", ("waiting" if has_script else "skipped")),
+            "voiceoverError": base_item.get("voiceoverError"),
+            "captionError": base_item.get("captionError"),
+            "realtimeSavedMp3": base_item.get("realtimeSavedMp3"),
+            "realtimeSavedSrt": base_item.get("realtimeSavedSrt"),
+            "hasProcessed": base_item.get("hasProcessed", False),
+            "hasProcessedSrt": base_item.get("hasProcessedSrt", False),
+            "processedPath": base_item.get("processedPath"),
+            "processedFileName": base_item.get("processedFileName"),
+            "processedSrtPath": base_item.get("processedSrtPath"),
+            "processedSrtFileName": base_item.get("processedSrtFileName"),
+            "finalDuration": base_item.get("finalDuration"),
+            "formattedFinalDuration": base_item.get("formattedFinalDuration"),
+            "durationRemoved": base_item.get("durationRemoved", 0.0),
+            "formattedDurationRemoved": base_item.get("formattedDurationRemoved", "00:00"),
+            "validation": base_item.get("validation"),
+            "errorDetails": base_item.get("errorDetails"),
+            "hasScript": has_script,
+            "scriptPath": script_path,
+            "scriptFileName": script_name,
+            "scriptType": script_ext,
+            "hasSrt": has_srt,
+            "srtPath": srt_path,
+            "srtFileName": script_name if has_srt else None,
+            "matchStatus": match_status,
+            "isMaster": (idx == 0)
+        }
+        file_entries.append(entry)
+
+    return file_entries, orphan_scripts
+
+
+@app.route("/api/scan-folder", methods=["POST"])
 def scan_folder():
-    """Scan local directory for audio files (V1.mp3, V2.mp3, etc.) and matching subtitles."""
+    """Scan local directory for audio files and scripts, supporting arbitrary numbering ranges."""
     data = request.get_json() or {}
     folder_path = data.get("folder_path", "").strip()
 
@@ -466,135 +876,113 @@ def scan_folder():
         return jsonify({"success": False, "error": f"Folder not found: {folder_path}"}), 400
 
     audio_extensions = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".wma"}
-    discovered_files = []
+    script_extensions = {".txt", ".docx", ".srt", ".text"}
+    discovered_audios = []
+    discovered_scripts = []
 
     try:
         for root, _, files in os.walk(folder_path):
             for file in files:
+                if file.startswith("."):
+                    continue
                 ext = os.path.splitext(file)[1].lower()
-                if ext in audio_extensions and not file.startswith("."):
-                    full_p = os.path.join(root, file)
-                    discovered_files.append(full_p)
+                full_p = os.path.join(root, file)
+                if ext in audio_extensions:
+                    discovered_audios.append(full_p)
+                elif ext in script_extensions:
+                    discovered_scripts.append(full_p)
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-    discovered_files.sort(key=lambda p: natural_sort_key(os.path.basename(p)))
+    # If this scan found only scripts, check if we have existing audios to link
+    if not discovered_audios and discovered_scripts:
+        if STATE["files"]:
+            existing_audios = [f["filePath"] for f in STATE["files"]]
+            file_entries, orphan_scripts = sync_and_match_state(existing_audios, discovered_scripts, folder_context=folder_path)
+            STATE["files"] = file_entries
+            STATE["orphan_scripts"] = orphan_scripts
+            matched_count = sum(1 for f in file_entries if f.get("hasScript"))
+            add_log(f"Linked {matched_count} scripts to voiceovers from {folder_path}.", "info")
+            if orphan_scripts:
+                add_log(f"⚠️ {len(orphan_scripts)} scripts have no matching audio.", "warning")
+            if STATE.get("output_folder"):
+                detect_batch_progress()
+            else:
+                update_analytics()
+            save_session_state()
+            return jsonify({
+                "success": True,
+                "folderPath": folder_path,
+                "count": len(file_entries),
+                "files": file_entries,
+                "orphanScripts": orphan_scripts,
+                "analytics": STATE["analytics"],
+                "resumeInfo": STATE.get("resume_info", {})
+            })
+        else:
+            # Only scripts found and no audios yet
+            matches, orphan_scripts = match_audio_and_script_lists([], discovered_scripts)
+            STATE["orphan_scripts"] = orphan_scripts
+            add_log(f"Found {len(orphan_scripts)} scripts in {folder_path}. Waiting for matching audio files.", "info")
+            update_analytics()
+            save_session_state()
+            return jsonify({
+                "success": True,
+                "folderPath": folder_path,
+                "count": 0,
+                "files": [],
+                "orphanScripts": orphan_scripts,
+                "analytics": STATE["analytics"],
+                "resumeInfo": {}
+            })
 
-    file_entries = []
-    for idx, fpath in enumerate(discovered_files):
-        try:
-            meta = get_audio_metadata(fpath)
-            cut_schedule = calculate_cut_schedule(meta["duration"])
-            
-            # Detect matching script (.txt, .docx, .srt)
-            script_path = find_matching_script(fpath, search_dir=folder_path)
-            has_script = bool(script_path and os.path.exists(script_path))
-            script_name = os.path.basename(script_path) if has_script else None
-            script_ext = os.path.splitext(script_name)[1].lower() if script_name else None
-            has_srt = (script_ext == ".srt")
-            srt_path = script_path if has_srt else None
+    if not discovered_audios:
+        return jsonify({"success": False, "error": f"No supported audio files found in {folder_path}."}), 400
 
-            entry = {
-                "id": f"file_{idx+1}",
-                "index": idx + 1,
-                "fileName": meta["fileName"],
-                "filePath": fpath,
-                "duration": meta["duration"],
-                "formattedDuration": meta["formattedDuration"],
-                "sizeBytes": meta["sizeBytes"],
-                "bitrate": meta["bitrate"],
-                "sampleRate": meta["sampleRate"],
-                "channels": meta["channels"],
-                "codec": meta["codec"],
-                "hasCuts": len(cut_schedule["cuts"]) > 0,
-                "cutCount": len(cut_schedule["cuts"]),
-                "estimatedProcessedDuration": cut_schedule["finalEstimatedDuration"],
-                "formattedEstimatedDuration": cut_schedule.get("formattedFinalDuration", ""),
-                "status": "ready",
-                "hasProcessed": False,
-                "hasScript": has_script,
-                "scriptPath": script_path,
-                "scriptFileName": script_name,
-                "scriptType": script_ext,
-                "hasSrt": has_srt,
-                "srtPath": srt_path,
-                "srtFileName": script_name if has_srt else None,
-                "isMaster": (idx == 0)
-            }
-            file_entries.append(entry)
-        except Exception as e:
-            add_log(f"Notice probing {fpath}: {e}", "warning")
-
+    file_entries, orphan_scripts = sync_and_match_state(discovered_audios, discovered_scripts, folder_context=folder_path)
     STATE["files"] = file_entries
-    update_analytics()
-    master_name = file_entries[0]['fileName'] if file_entries else 'None'
-    add_log(f"Loaded {len(file_entries)} voiceovers from {folder_path} (Master: {master_name})", "info")
+    STATE["orphan_scripts"] = orphan_scripts
+
+    if STATE.get("output_folder"):
+        detect_batch_progress()
+    else:
+        update_analytics()
+    save_session_state()
+
+    master_label = file_entries[0]["vLabel"] if file_entries else "None"
+    matched_count = sum(1 for f in file_entries if f.get("hasScript"))
+    add_log(f"Loaded {len(file_entries)} voiceovers from {folder_path} (Master Reference: {master_label}).", "info")
+    add_log(f"  └── Script matching: {matched_count}/{len(file_entries)} matched.", "info")
+    if orphan_scripts:
+        add_log(f"⚠️ {len(orphan_scripts)} scripts found without matching audio.", "warning")
 
     return jsonify({
         "success": True,
         "folderPath": folder_path,
         "count": len(file_entries),
         "files": file_entries,
-        "analytics": STATE["analytics"]
+        "orphanScripts": orphan_scripts,
+        "analytics": STATE["analytics"],
+        "resumeInfo": STATE.get("resume_info", {})
     })
 
 
 @app.route("/api/upload-files", methods=["POST"])
 def upload_files():
-    """Handle browser folder/file uploads (both audio files and matching .srt files)."""
+    """
+    Handle browser file/folder uploads for both audio files and scripts.
+    Order of upload does not matter:
+    - User can upload audios first, then scripts.
+    - User can upload scripts first, then audios.
+    - User can upload both simultaneously.
+    - Pre-existing uploads are preserved rather than blindly deleted.
+    """
     if "files" not in request.files:
         return jsonify({"success": False, "error": "No files uploaded"}), 400
 
     uploaded_files = request.files.getlist("files")
-
-    audio_extensions = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
+    audio_extensions = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".wma"}
     script_extensions = {".txt", ".docx", ".srt", ".text"}
-
-    has_audio_uploads = any(
-        os.path.splitext(f.filename)[1].lower() in audio_extensions
-        for f in uploaded_files if f.filename
-    )
-
-    if not has_audio_uploads and STATE["files"]:
-        # Scripts-only upload: Save scripts and auto-link to existing files in queue
-        saved_scripts = []
-        for file in uploaded_files:
-            if not file.filename or file.filename.startswith("."):
-                continue
-            fname = os.path.basename(file.filename)
-            dest_path = os.path.join(UPLOADS_DIR, fname)
-            file.save(dest_path)
-            saved_scripts.append(dest_path)
-
-        linked_count = 0
-        for entry in STATE["files"]:
-            sp = find_matching_script(entry["filePath"], search_dir=UPLOADS_DIR)
-            if sp:
-                entry["hasScript"] = True
-                entry["scriptPath"] = sp
-                entry["scriptFileName"] = os.path.basename(sp)
-                entry["scriptType"] = os.path.splitext(sp)[1].lower()
-                if entry["scriptType"] == ".srt":
-                    entry["hasSrt"] = True
-                    entry["srtPath"] = sp
-                    entry["srtFileName"] = entry["scriptFileName"]
-                linked_count += 1
-
-        add_log(f"Auto-linked {linked_count} uploaded scripts to existing voiceovers.", "info")
-        return jsonify({
-            "success": True,
-            "count": len(STATE["files"]),
-            "files": STATE["files"],
-            "analytics": STATE["analytics"],
-            "scriptsLinked": linked_count
-        })
-
-    # Audio + Script upload: Clean old uploads and index fresh batch
-    for f in os.listdir(UPLOADS_DIR):
-        try:
-            os.remove(os.path.join(UPLOADS_DIR, f))
-        except Exception:
-            pass
 
     for file in uploaded_files:
         if not file.filename or file.filename.startswith("."):
@@ -603,74 +991,90 @@ def upload_files():
         dest_path = os.path.join(UPLOADS_DIR, fname)
         file.save(dest_path)
 
-    discovered = [
-        os.path.join(UPLOADS_DIR, f)
-        for f in os.listdir(UPLOADS_DIR)
-        if os.path.splitext(f)[1].lower() in audio_extensions
+    all_uploads_audios = [
+        os.path.join(UPLOADS_DIR, f) for f in os.listdir(UPLOADS_DIR)
+        if os.path.splitext(f)[1].lower() in audio_extensions and not f.startswith(".")
     ]
-    discovered.sort(key=lambda p: natural_sort_key(os.path.basename(p)))
+    all_uploads_scripts = [
+        os.path.join(UPLOADS_DIR, f) for f in os.listdir(UPLOADS_DIR)
+        if os.path.splitext(f)[1].lower() in script_extensions and not f.startswith(".")
+    ]
 
-    file_entries = []
-    for idx, fpath in enumerate(discovered):
-        try:
-            meta = get_audio_metadata(fpath)
-            cut_schedule = calculate_cut_schedule(meta["duration"])
-            
-            # Detect matching script (.txt, .docx, .srt)
-            script_path = find_matching_script(fpath, search_dir=UPLOADS_DIR)
-            has_script = bool(script_path and os.path.exists(script_path))
-            script_name = os.path.basename(script_path) if has_script else None
-            script_ext = os.path.splitext(script_name)[1].lower() if script_name else None
-            has_srt = (script_ext == ".srt")
-            srt_path = script_path if has_srt else None
+    active_audios = list(all_uploads_audios)
+    if not active_audios and STATE["files"]:
+        active_audios = [f["filePath"] for f in STATE["files"] if f.get("filePath") and os.path.exists(f["filePath"])]
 
-            entry = {
-                "id": f"file_{idx+1}",
-                "index": idx + 1,
-                "fileName": meta["fileName"],
-                "filePath": fpath,
-                "duration": meta["duration"],
-                "formattedDuration": meta["formattedDuration"],
-                "sizeBytes": meta["sizeBytes"],
-                "bitrate": meta["bitrate"],
-                "sampleRate": meta["sampleRate"],
-                "channels": meta["channels"],
-                "codec": meta["codec"],
-                "hasCuts": len(cut_schedule["cuts"]) > 0,
-                "cutCount": len(cut_schedule["cuts"]),
-                "estimatedProcessedDuration": cut_schedule["finalEstimatedDuration"],
-                "formattedEstimatedDuration": cut_schedule.get("formattedFinalDuration", ""),
-                "status": "ready",
-                "voiceoverStatus": "waiting",
-                "captionStatus": "waiting" if has_script else "skipped",
-                "voiceoverError": None,
-                "captionError": None,
-                "realtimeSavedMp3": None,
-                "realtimeSavedSrt": None,
-                "hasProcessed": False,
-                "hasScript": has_script,
-                "scriptPath": script_path,
-                "scriptFileName": script_name,
-                "scriptType": script_ext,
-                "hasSrt": has_srt,
-                "srtPath": srt_path,
-                "srtFileName": script_name if has_srt else None,
-                "isMaster": (idx == 0)
-            }
-            file_entries.append(entry)
-        except Exception as e:
-            add_log(f"Notice probing uploaded file {fpath}: {e}", "warning")
+    # If NO audios exist at all (e.g. user uploaded only scripts first)
+    if not active_audios:
+        matches, orphan_scripts = match_audio_and_script_lists([], all_uploads_scripts)
+        STATE["orphan_scripts"] = orphan_scripts
+        update_analytics()
+        save_session_state()
+        add_log(f"Indexed {len(orphan_scripts)} scripts. Waiting for audio files (e.g. V20.mp3)...", "info")
+        return jsonify({
+            "success": True,
+            "count": 0,
+            "files": [],
+            "orphanScripts": orphan_scripts,
+            "analytics": STATE["analytics"],
+            "scriptsLinked": 0,
+            "message": "Scripts loaded. Awaiting audio files to pair."
+        })
 
+    # Audios exist (either newly uploaded, or previously existing with newly uploaded scripts)
+    file_entries, orphan_scripts = sync_and_match_state(active_audios, all_uploads_scripts)
     STATE["files"] = file_entries
-    update_analytics()
-    add_log(f"Indexed {len(file_entries)} voiceover files. V1 Master assigned.", "info")
+    STATE["orphan_scripts"] = orphan_scripts
+
+    if STATE.get("output_folder"):
+        detect_batch_progress()
+    else:
+        update_analytics()
+    save_session_state()
+
+    master_label = file_entries[0]["vLabel"] if file_entries else "None"
+    matched_count = sum(1 for f in file_entries if f.get("hasScript"))
+    add_log(f"Indexed {len(file_entries)} voiceovers (Master Reference: {master_label}).", "info")
+    add_log(f"  └── Matched {matched_count}/{len(file_entries)} scripts.", "info")
+    if orphan_scripts:
+        add_log(f"⚠️ {len(orphan_scripts)} scripts currently have no matching audio file.", "warning")
 
     return jsonify({
         "success": True,
         "count": len(file_entries),
         "files": file_entries,
-        "analytics": STATE["analytics"]
+        "orphanScripts": orphan_scripts,
+        "analytics": STATE["analytics"],
+        "resumeInfo": STATE.get("resume_info", {}),
+        "scriptsLinked": matched_count
     })
+
+
+@app.route("/api/clear-queue", methods=["POST"])
+def clear_queue():
+    """Clear file queue, orphan scripts, and uploaded files."""
+    try:
+        for f in os.listdir(UPLOADS_DIR):
+            try:
+                fp = os.path.join(UPLOADS_DIR, f)
+                if os.path.isfile(fp):
+                    os.remove(fp)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    STATE["files"] = []
+    STATE["orphan_scripts"] = []
+    STATE["available_scripts"] = {}
+    STATE["processed_files"] = {}
+    STATE["current_file"] = None
+    STATE["is_processing"] = False
+    STATE["progress"] = 0
+    update_analytics()
+    save_session_state()
+    add_log("Cleared audio and script queue.", "info")
+    return jsonify({"success": True, "files": [], "orphanScripts": []})
 
 
 @app.route("/api/randomize-params", methods=["POST"])
@@ -817,12 +1221,15 @@ def generate_preview():
                     output_srt_path=preview_srt,
                     speed_factor=safe_float(resolved_params.get("speed_factor"), 1.0),
                     cuts=res.get("cuts", []),
-                    processed_audio_duration=res.get("processedDuration", 0.0),
+                    target_audio_duration=res.get("processedDuration", 0.0),
                     ffmpeg_bin=FFMPEG_PATH
                 )
                 caption_info["success"] = True
                 caption_info["cuesCount"] = caption_res.get("finalCueCount", 0)
                 caption_info["validation"] = caption_res.get("validation", {})
+                if caption_res.get("removedHeaders"):
+                    rem_h = caption_res["removedHeaders"]
+                    add_log(f"🧹 Cleaned {len(rem_h)} header line(s) from script before alignment: {', '.join(rem_h)}", "info")
                 if target_entry:
                     target_entry["hasProcessedSrt"] = True
                     target_entry["captionValidation"] = caption_res.get("validation", {})
@@ -891,6 +1298,37 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings, o
             caption_dir = subdirs["caption_dir"]
         except Exception as e_dir:
             add_log(f"Warning: Could not prepare destination subfolders in {output_folder}: {e_dir}", "warning")
+
+    # Check if this item's output is ALREADY completed and validated on disk
+    existing_check = validate_existing_output_for_item(item, output_folder, caption_mode)
+    if existing_check["is_completed"]:
+        item["status"] = "completed"
+        item["statusLabel"] = "SUCCESS ✓"
+        if caption_mode == "mode2":
+            item["voiceoverStatus"] = "untouched"
+        else:
+            item["voiceoverStatus"] = "saved"
+            item["hasProcessed"] = True
+            item["processedPath"] = existing_check["expected_mp3"]
+            item["realtimeSavedMp3"] = existing_check["expected_mp3"]
+            item["voiceoverSavedPath"] = existing_check["expected_mp3"]
+
+        if existing_check["caption_valid"] and existing_check.get("expected_srt") and os.path.exists(existing_check["expected_srt"]):
+            item["captionStatus"] = "saved"
+            item["hasProcessedSrt"] = True
+            item["processedSrtPath"] = existing_check["expected_srt"]
+            item["realtimeSavedSrt"] = existing_check["expected_srt"]
+            item["captionSavedPath"] = existing_check["expected_srt"]
+        elif not item.get("hasScript"):
+            item["captionStatus"] = "skipped"
+
+        item["isReused"] = True
+        item["errorDetails"] = None
+        item["errorMessage"] = None
+        item["voiceoverError"] = None
+        item["captionError"] = None
+        add_log(f"⚡ {base_name} — Output already exists & verified ✓ (Reused)", "info")
+        return True, orig_name, None
 
     # Check input audio file existence
     if not in_path or not os.path.exists(in_path):
@@ -962,6 +1400,10 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings, o
 
             val = caption_res.get("validation", {})
             val_status = val.get("status", "SUCCESS")
+
+            if caption_res.get("removedHeaders"):
+                rem_h = caption_res["removedHeaders"]
+                add_log(f"🧹 Cleaned {len(rem_h)} header line(s) from '{os.path.basename(script_in)}' before alignment: {', '.join(rem_h)}", "info")
 
             if val_status == "FAILED":
                 err = diagnose_srt_error(out_srt_name, reason_detail=val.get("error", "SRT validation failed."))
@@ -1141,6 +1583,10 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings, o
                     ffmpeg_bin=FFMPEG_PATH
                 )
 
+                if caption_res.get("removedHeaders"):
+                    rem_h = caption_res["removedHeaders"]
+                    add_log(f"🧹 Cleaned {len(rem_h)} header line(s) from '{os.path.basename(script_in)}' before alignment: {', '.join(rem_h)}", "info")
+
                 if os.path.exists(out_srt_path) and os.path.getsize(out_srt_path) > 0:
                     item["hasProcessedSrt"] = True
                     item["processedSrtPath"] = out_srt_path
@@ -1227,29 +1673,21 @@ def process_single_item_worker(item, idx, total_count, caption_mode, settings, o
         return False, orig_name, err
 
 
-@app.route("/api/process-batch", methods=["POST"])
-def process_batch():
-    """
-    Start batch processing of voiceovers in configurable chunks (Default: 3 at a time).
-    Processes batch chunk -> validates every output on disk -> real-time saves to Voiceover/ & Caption/ -> logs results -> proceeds to next batch chunk.
-    """
+def _execute_batch_process(data: Dict[str, Any]):
     if STATE["is_processing"]:
         return jsonify({"success": False, "error": "A batch is already running."}), 400
 
-    data = request.get_json() or {}
     settings = data.get("settings") or STATE.get("master_v1_settings") or {}
     file_ids = data.get("file_ids", [])
     batch_size = max(1, min(20, safe_int(data.get("batch_size"), 3)))
+    resume_only = data.get("resume_only", False)
+
+    if not STATE["files"]:
+        load_session_state()
 
     if not STATE["files"]:
         return jsonify({"success": False, "error": "No voiceovers in queue."}), 400
 
-    targets = [f for f in STATE["files"] if not file_ids or f["id"] in file_ids]
-    STATE["batch_size"] = batch_size
-    caption_mode = data.get("caption_mode") or STATE.get("caption_mode", "mode1")
-    STATE["caption_mode"] = caption_mode
-
-    # Configure output destination folder for real-time saving
     output_folder = data.get("output_folder") or STATE.get("output_folder")
     if output_folder:
         try:
@@ -1263,29 +1701,52 @@ def process_batch():
         except Exception as e_out:
             add_log(f"Warning: Could not setup destination folder: {e_out}", "warning")
 
+    STATE["batch_size"] = batch_size
+    caption_mode = data.get("caption_mode") or STATE.get("caption_mode", "mode1")
+    STATE["caption_mode"] = caption_mode
+
+    # Run progress detection
+    detect_batch_progress(output_folder, caption_mode)
+
+    if resume_only:
+        targets = [f for f in STATE["files"] if not f.get("isReused") and f.get("status") != "completed"]
+        if not targets:
+            return jsonify({
+                "success": True,
+                "message": "All files are already completed and validated.",
+                "allCompleted": True
+            })
+        first_label = targets[0].get("fileName", "V1")
+        add_log(f"Resuming processing from {first_label} ({len(targets)} files remaining)...", "info")
+    else:
+        targets = [f for f in STATE["files"] if not file_ids or f["id"] in file_ids]
+
     def run_chunked_worker():
         STATE["is_processing"] = True
-        STATE["progress"] = 0
-        total = len(targets)
+        total_all_files = len(STATE["files"])
+        already_completed = sum(1 for f in STATE["files"] if f.get("isReused") or f.get("status") == "completed")
+        processed_so_far = already_completed
+        STATE["progress"] = int((processed_so_far / total_all_files) * 100) if total_all_files > 0 else 0
+        total_targets = len(targets)
         start_time = time.time()
 
-        # Initialize all target files in tracker to waiting/skipped status
+        # Initialize targets that are not already reused
         for item in targets:
-            item["voiceoverStatus"] = "waiting"
-            item["captionStatus"] = "waiting" if item.get("hasScript") else "skipped"
-            item["voiceoverError"] = None
-            item["captionError"] = None
+            if not item.get("isReused"):
+                item["voiceoverStatus"] = "waiting"
+                item["captionStatus"] = "waiting" if item.get("hasScript") else "skipped"
+                item["voiceoverError"] = None
+                item["captionError"] = None
 
-        # Split into chunks of batch_size (default 3)
-        chunks = [targets[i:i + batch_size] for i in range(0, total, batch_size)]
+        chunks = [targets[i:i + batch_size] for i in range(0, total_targets, batch_size)]
         total_chunks = len(chunks)
         STATE["total_batches"] = total_chunks
 
-        add_log(f"Starting batch processing: {total} files across {total_chunks} batches ({batch_size} audios at a time)...", "info")
+        action_desc = "Resumed batch processing" if resume_only else "Starting batch processing"
+        add_log(f"{action_desc}: {total_targets} files across {total_chunks} batches ({batch_size} audios at a time)...", "info")
 
         overall_success = 0
         overall_failed = 0
-        processed_so_far = 0
 
         for chunk_idx, chunk in enumerate(chunks):
             chunk_num = chunk_idx + 1
@@ -1298,13 +1759,12 @@ def process_batch():
             add_log(f"━━━ Processing Batch {chunk_num} of {total_chunks} ({', '.join(chunk_file_names)}) ━━━", "info")
             update_analytics()
 
-            # Run this chunk concurrently with max_workers = batch_size
             chunk_success = 0
             chunk_failed = 0
 
             with ThreadPoolExecutor(max_workers=len(chunk)) as executor:
                 futures = {
-                    executor.submit(process_single_item_worker, item, processed_so_far + i, total, caption_mode, settings, output_folder): item
+                    executor.submit(process_single_item_worker, item, processed_so_far + i, total_all_files, caption_mode, settings, output_folder): item
                     for i, item in enumerate(chunk)
                 }
 
@@ -1318,14 +1778,15 @@ def process_batch():
                         overall_failed += 1
                     
                     processed_so_far += 1
-                    STATE["progress"] = int((processed_so_far / total) * 100)
+                    STATE["progress"] = int((processed_so_far / total_all_files) * 100) if total_all_files > 0 else 100
                     update_analytics()
+                    save_session_state()
 
             chunk_elapsed = time.time() - chunk_start_time
             add_log(
                 f"✓ Batch {chunk_num} of {total_chunks} Completed in {format_time(chunk_elapsed)} "
                 f"({chunk_success} successful, {chunk_failed} failed). "
-                f"Progress: {processed_so_far}/{total} ({STATE['progress']}%)",
+                f"Progress: {processed_so_far}/{total_all_files} ({STATE['progress']}%)",
                 "info" if chunk_failed == 0 else "warning"
             )
 
@@ -1333,19 +1794,20 @@ def process_batch():
         STATE["is_processing"] = False
         STATE["current_file"] = None
         STATE["active_batch_files"] = []
+        detect_batch_progress(output_folder, caption_mode)
         update_analytics()
+        save_session_state()
 
         # Final Batch Summary Report
         add_log("━━━━━━━━━ Batch Processing Summary ━━━━━━━━━", "info")
-        add_log(f"• Total files: {total}", "info")
-        add_log(f"• Batches processed: {total_chunks} ({batch_size} at a time)", "info")
-        add_log(f"• Successfully processed: {overall_success}", "info")
+        add_log(f"• Total files in project: {total_all_files}", "info")
+        add_log(f"• Batch run files: {total_targets}", "info")
+        add_log(f"• Successfully processed/reused in this run: {overall_success}", "info")
         add_log(f"• Failed: {overall_failed}", "info" if overall_failed == 0 else "error")
-        add_log(f"• Total completed: {overall_success}/{total}", "success" if overall_success == total else "warning")
-        add_log(f"• Total processing time: {format_time(total_elapsed)}", "info")
-        add_log(f"• Total processed duration: {STATE['analytics']['formattedTotalProcessed']}", "info")
-        add_log(f"• Total duration removed: {STATE['analytics']['formattedTotalRemoved']}", "info")
-        add_log(f"Batch processing complete. {overall_success} of {total} files were successfully processed and verified.", "success")
+        total_now_done = sum(1 for f in STATE["files"] if f.get("status") == "completed")
+        add_log(f"• Overall completed: {total_now_done}/{total_all_files}", "success" if total_now_done == total_all_files else "warning")
+        add_log(f"• Run processing time: {format_time(total_elapsed)}", "info")
+        add_log(f"Batch processing complete. {total_now_done} of {total_all_files} files are verified on disk.", "success")
 
     thread = threading.Thread(target=run_chunked_worker, daemon=True)
     thread.start()
@@ -1357,6 +1819,31 @@ def process_batch():
         "batchSize": batch_size,
         "totalBatches": (len(targets) + batch_size - 1) // batch_size
     })
+
+
+@app.route("/api/process-batch", methods=["POST"])
+def process_batch():
+    """Start standard batch processing."""
+    data = request.get_json() or {}
+    return _execute_batch_process(data)
+
+
+@app.route("/api/resume-batch", methods=["POST"])
+def resume_batch():
+    """Resume batch processing from the first incomplete file."""
+    data = request.get_json() or {}
+    data["resume_only"] = True
+    return _execute_batch_process(data)
+
+
+@app.route("/api/resume-state", methods=["GET", "POST"])
+def get_resume_state():
+    """Returns detected progress across existing output folders and files."""
+    data = request.get_json() if request.is_json else {}
+    out_dir = data.get("output_folder") or STATE.get("output_folder")
+    mode = data.get("caption_mode") or STATE.get("caption_mode")
+    summary = detect_batch_progress(output_folder=out_dir, caption_mode=mode)
+    return jsonify({"success": True, "resumeInfo": summary})
 
 
 @app.route("/api/align-single-srt", methods=["POST"])
@@ -1416,6 +1903,10 @@ def align_single_srt():
             mode=caption_mode,
             ffmpeg_bin=FFMPEG_PATH
         )
+
+        if caption_res.get("removedHeaders"):
+            rem_h = caption_res["removedHeaders"]
+            add_log(f"🧹 Cleaned {len(rem_h)} header line(s) from '{os.path.basename(script_in)}' before alignment: {', '.join(rem_h)}", "info")
 
         if not os.path.exists(out_srt_path) or os.path.getsize(out_srt_path) == 0:
             err = diagnose_srt_error(out_srt_name, reason_detail=f"{out_srt_name} was not created on disk.")
@@ -1520,6 +2011,10 @@ def retry_item():
                     ffmpeg_bin=FFMPEG_PATH
                 )
 
+                if caption_res.get("removedHeaders"):
+                    rem_h = caption_res["removedHeaders"]
+                    add_log(f"🧹 Cleaned {len(rem_h)} header line(s) from '{os.path.basename(target['scriptPath'])}' before alignment: {', '.join(rem_h)}", "info")
+
                 if os.path.exists(out_srt_path) and os.path.getsize(out_srt_path) > 0:
                     target["hasProcessedSrt"] = True
                     target["processedSrtPath"] = out_srt_path
@@ -1602,8 +2097,16 @@ def set_caption_mode():
 
 @app.route("/api/status", methods=["GET"])
 def get_status():
-    """Poll processing status, progress, logs, analytics, active batch files, and updated file states."""
+    """Poll processing status, progress, logs, analytics, active batch files, updated file states, and resume information."""
+    if not STATE["files"]:
+        load_session_state()
+
+    resume_info = STATE.get("resume_info")
+    if not resume_info and STATE["files"] and STATE.get("output_folder"):
+        resume_info = detect_batch_progress(STATE.get("output_folder"), STATE.get("caption_mode"))
+
     return jsonify({
+        "version": APP_VERSION,
         "isProcessing": STATE["is_processing"],
         "currentFile": STATE["current_file"],
         "currentBatch": STATE.get("current_batch", 0),
@@ -1614,9 +2117,11 @@ def get_status():
         "progress": STATE["progress"],
         "logs": STATE["logs"][-60:],
         "files": STATE["files"],
+        "orphanScripts": STATE.get("orphan_scripts", []),
         "outputFolder": STATE.get("output_folder"),
         "outputSubfolders": STATE.get("output_subfolders") or {},
-        "analytics": STATE["analytics"]
+        "analytics": STATE["analytics"],
+        "resumeInfo": resume_info or {}
     })
 
 

@@ -80,7 +80,87 @@ def find_best_script_match(audio_stem: str, script_map: Dict[str, str], script_l
     return None
 
 
-def read_script_file(path: str) -> str:
+def is_metadata_header_line(line: str) -> bool:
+    """
+    Check if a line matches non-spoken script metadata/header patterns:
+    - Standalone version / script identifier: 'V1', 'V2', 'Script V1', 'Version 1', '[V1]', '# V1', etc.
+    - Word count or character metrics: 'Competitor Script Word Count: 2,332', 'Word Count: ...', etc.
+    - Standard metadata key-value lines: 'Title: ...', 'Author: ...', 'Date: ...', etc.
+    - Separators / dividers: '---', '===', '***', etc.
+    """
+    clean_line = line.strip()
+    if not clean_line:
+        return False
+    if re.match(r'^[-=_*]{3,}$', clean_line):
+        return True
+    content = re.sub(r'^[#*_\-\s]+', '', clean_line).strip()
+    content = re.sub(r'[*_]+$', '', content).strip()
+    if (content.startswith('[') and content.endswith(']')) or (content.startswith('(') and content.endswith(')')):
+        inner = content[1:-1].strip()
+    else:
+        inner = content
+
+    # 1. Version / Script ID lines
+    if re.match(r'^(?:v|vol|volume|version|ver|script|episode|ep|chapter|ch|part|take|track|audio|voice(?:over)?|file)[\s.:#_-]*(?:v|vol)?[\s.:#_-]*\d+(?:\s*(?:script|draft|final|text|vo|voiceover|audio))?$', inner, re.IGNORECASE):
+        return True
+
+    # 2. Word / Character count metrics
+    if re.match(r'^(?:competitor\s+)?(?:script\s+)?(?:total\s+)?(?:words?|characters?|chars?)(?:\s*count)?\s*[:=-]\s*[\d,.~kK\s\w]+$', inner, re.IGNORECASE):
+        return True
+    if re.match(r'^(?:estimated\s+)?(?:reading\s+time|duration|run\s*time|target\s*duration)\s*[:=-]\s*[\w\d:.,~ ]+$', inner, re.IGNORECASE):
+        return True
+
+    # 3. Standard metadata labels
+    if re.match(r'^(?:title|project|author|writer|client|date|topic|voice\s*(?:over|actor|artist)?|speaker|talent|narrator|language|lang|status|draft|tags|notes?|header|metadata)\s*[:=-]\s*.+$', inner, re.IGNORECASE):
+        return True
+
+    # 4. Metadata block markers
+    if re.match(r'^(?:---|\*\*\*|===)?\s*(?:metadata|header|script\s*info|start\s*of\s*script|begin\s*script)\s*(?:---|\*\*\*|===)?$', inner, re.IGNORECASE):
+        return True
+
+    return False
+
+
+def clean_script_header_metadata(text: str) -> Tuple[str, List[str]]:
+    """
+    Detect and strip non-spoken metadata/header text exclusively at the beginning of the script:
+    - Standalone version identifiers: 'V1', 'V2', 'Script V1', '[V20]', etc.
+    - Word/character count metrics: 'Competitor Script Word Count: 2,332', 'Word Count: ...', etc.
+    - Script/project metadata labels: 'Title: ...', 'Author: ...', 'Date: ...', etc.
+    - Separator lines: '---', '===', etc.
+    - Leading blank lines.
+
+    CRITICAL RULE:
+    Stop scanning the moment a non-metadata, spoken line is encountered.
+    Never strip or alter lines from the middle or end of the script.
+    Preserves legitimate spoken narration (e.g. 'V1 rockets were first developed...').
+    """
+    if not text:
+        return "", []
+
+    lines = text.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    removed_headers: List[str] = []
+    first_spoken_idx = -1
+
+    for idx, raw_line in enumerate(lines):
+        trimmed = raw_line.strip()
+        if not trimmed:
+            continue
+        if is_metadata_header_line(trimmed):
+            removed_headers.append(trimmed)
+        else:
+            first_spoken_idx = idx
+            break
+
+    if first_spoken_idx == -1:
+        cleaned = ""
+    else:
+        cleaned = '\n'.join(lines[first_spoken_idx:]).strip()
+
+    return cleaned, removed_headers
+
+
+def read_script_file(path: str, clean_header: bool = False) -> str:
     if not path or not os.path.exists(path):
         raise FileNotFoundError(f"Script file not found: {path}")
 
@@ -96,7 +176,7 @@ def read_script_file(path: str) -> str:
                     row_text = ' '.join([c.text.strip() for c in row.cells if c.text.strip()])
                     if row_text:
                         paragraphs.append(row_text)
-            return '\n'.join(paragraphs).strip()
+            content = '\n'.join(paragraphs).strip()
         except Exception as e:
             try:
                 import zipfile
@@ -105,23 +185,31 @@ def read_script_file(path: str) -> str:
                     xml_content = zf.read('word/document.xml')
                 tree = ET.fromstring(xml_content)
                 texts = [elem.text for elem in tree.iter() if elem.text]
-                return ' '.join(texts).strip()
+                content = ' '.join(texts).strip()
             except Exception:
                 raise RuntimeError(f"Could not parse DOCX file '{os.path.basename(path)}': {e}")
+    else:
+        content = None
+        encodings = ['utf-8-sig', 'utf-8', 'latin-1', 'cp1252', 'utf-16']
+        for enc in encodings:
+            try:
+                with open(path, 'r', encoding=enc, errors='strict') as f:
+                    content = f.read()
+                if content.startswith('\ufeff'):
+                    content = content[1:]
+                content = content.strip()
+                break
+            except Exception:
+                continue
 
-    encodings = ['utf-8-sig', 'utf-8', 'latin-1', 'cp1252', 'utf-16']
-    for enc in encodings:
-        try:
-            with open(path, 'r', encoding=enc, errors='strict') as f:
-                content = f.read()
-            if content.startswith('\ufeff'):
-                content = content[1:]
-            return content.strip()
-        except Exception:
-            continue
+        if content is None:
+            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read().strip()
 
-    with open(path, 'r', encoding='utf-8', errors='replace') as f:
-        return f.read().strip()
+    if clean_header and content:
+        cleaned, _ = clean_script_header_metadata(content)
+        return cleaned
+    return content
 
 
 def _collect_files_recursive(root_dir: str) -> Tuple[List[str], List[str]]:
@@ -242,10 +330,12 @@ def scan_and_match_files(audio_dir: str, script_dir: Optional[str] = None) -> Li
         matched_script_paths.add(matched_s_path)
         try:
             script_text = read_script_file(matched_s_path)
-            words = script_text.split()
+            cleaned_script, removed_headers = clean_script_header_metadata(script_text)
+            spoken_text = cleaned_script if cleaned_script.strip() else script_text
+            words = spoken_text.split()
             word_count = len(words)
 
-            if not script_text.strip() or word_count == 0:
+            if not spoken_text.strip() or word_count == 0:
                 results.append(JobPair(
                     job_id=job_id,
                     base_name=stem_raw,
@@ -264,6 +354,11 @@ def scan_and_match_files(audio_dir: str, script_dir: Optional[str] = None) -> Li
                 continue
 
             # Matched & Validated Pair
+            details_suffix = f" ({word_count} spoken words"
+            if removed_headers:
+                details_suffix += f", {len(removed_headers)} header lines cleaned"
+            details_suffix += ")"
+
             results.append(JobPair(
                 job_id=job_id,
                 base_name=stem_raw,
@@ -273,10 +368,10 @@ def scan_and_match_files(audio_dir: str, script_dir: Optional[str] = None) -> Li
                 status='MATCHED',
                 error_reason='',
                 audio_duration=duration,
-                script_text=script_text,
+                script_text=spoken_text,
                 script_words_count=word_count,
                 sync_status="Ready to Align",
-                validation_details=f"Matched with {os.path.basename(matched_s_path)} ({word_count} words)",
+                validation_details=f"Matched with {os.path.basename(matched_s_path)}{details_suffix}",
                 problem="None",
                 solution="Voice-over and script are matched and verified. Ready for alignment."
             ))

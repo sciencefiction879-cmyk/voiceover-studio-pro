@@ -26,7 +26,7 @@
         <div>
           <div style="display: flex; align-items: center; gap: 8px;">
             <h1 class="brand-title">Voiceover Studio Pro</h1>
-            <span class="version-tag">v0.4.1</span>
+            <span class="version-tag">v0.4.3</span>
           </div>
           <p class="brand-subtitle">Mode 1 (Process + Cut + SRT) &bull; Mode 2 (Alignment Only) &bull; Forced Alignment &bull; 25m+ Cuts &bull; Gemini AI</p>
         </div>
@@ -38,15 +38,13 @@
             <span class="pill-dot ok"></span>
             <span class="pill-text">FFmpeg Ready</span>
           </div>
-          <div class="status-pill gemini-idle" id="geminiHeaderBadge" title="Click to manage Gemini API keys & model">
-            <span class="pill-dot"></span>
-            <span class="pill-text">Gemini AI (Optional)</span>
-          </div>
         </div>
 
-        <button id="btnOpenGeminiModal" class="btn btn-sm btn-ai-glow" title="Configure Gemini API Keys & Google AI Studio Models">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-          ✨ Gemini AI
+        <button id="btnOpenOutputFolder" class="btn btn-secondary btn-header-folder" title="Open chosen destination folder in Finder">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+          </svg>
+          Open Destination Folder
         </button>
 
         <div class="preset-selector-group">
@@ -78,7 +76,10 @@
             </svg>
             <h2>Voiceover Files</h2>
           </div>
-          <span class="badge" id="fileCountBadge">0 Files</span>
+          <div style="display:flex; align-items:center; gap:6px;">
+            <span class="badge" id="fileCountBadge">0 Files</span>
+            <button id="btnClearQueueBtn" class="btn btn-xs btn-outline-danger" title="Clear all loaded files and scripts" style="padding: 2px 6px; font-size: 0.68rem; display: none;">✕ Clear</button>
+          </div>
         </div>
 
         <!-- Folder Selection Controls -->
@@ -104,7 +105,7 @@
                 <path d="M12 12v9"/>
                 <path d="m8 16 4-4 4 4"/>
               </svg>
-              <p class="dropzone-text">Drop voiceovers &amp; scripts (V1.mp3, V1.txt, V1.docx, V1.srt...)</p>
+              <p class="dropzone-text">Drop voiceovers &amp; scripts (V20.mp3, V20 Script.txt, V20.docx, V20.srt...)</p>
               <div style="display:flex; gap:8px; justify-content:center; margin-top:4px;">
                 <button id="btnUploadFolder" class="btn btn-xs btn-glass">Choose Folder</button>
                 <button id="btnUploadFilesOnly" class="btn btn-xs btn-glass">Choose Files</button>
@@ -115,7 +116,7 @@
 
         <!-- File List Queue with Natural Sequence -->
         <div class="file-queue-header">
-          <span>Sequenced Queue (V1 &rarr; Vn)</span>
+          <span id="queueHeaderTitle">Sequenced Queue</span>
           <span id="queueTotalDuration">Total: 00:00</span>
         </div>
 
@@ -127,8 +128,21 @@
               <line x1="12" y1="16" x2="12.01" y2="16"/>
             </svg>
             <p>No voiceovers loaded yet.</p>
-            <small>Select or drop a folder containing V1.mp3, V2.mp3...</small>
+            <small>Select or drop audio files (e.g. V20.mp3) and scripts (V20 Script.txt)</small>
           </div>
+        </div>
+
+        <!-- Unmatched Orphan Scripts Card -->
+        <div class="orphan-scripts-card" id="orphanScriptsCard" style="display: none;">
+          <div class="orphan-header">
+            <div class="orphan-title-wrap">
+              <span class="orphan-title-icon">⚠️</span>
+              <span class="orphan-title-text">Unmatched Scripts</span>
+              <span class="orphan-count-badge" id="orphanCountBadge">0</span>
+            </div>
+            <small class="orphan-subtitle">Scripts awaiting matching audio files</small>
+          </div>
+          <div class="orphan-list" id="orphanScriptsList"></div>
         </div>
       </section>
 
@@ -854,10 +868,16 @@
             <small class="output-folder-hint">⚡ Completed files are written in real time as each audio finishes—no waiting for the entire batch.</small>
           </div>
 
-          <button id="btnProcessBatch" class="btn btn-cta btn-block">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-            <span>Process All Voiceovers (V1, V2, ...)</span>
-          </button>
+          <div class="batch-action-buttons-group">
+            <button id="btnProcessBatch" class="btn btn-cta btn-block">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+              <span id="btnProcessBatchText">Process All Voiceovers (V1, V2, ...)</span>
+            </button>
+            <button id="btnResumeBatch" class="btn btn-resume btn-block" style="display: none;" title="Resume processing from the first incomplete voiceover">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+              <span id="btnResumeBatchText">Resume Processing</span>
+            </button>
+          </div>
 
           <!-- Overall Batch Progress Bar -->
           <div class="batch-progress-card" id="batchProgressCard">
@@ -880,10 +900,10 @@
               <span class="tracker-live-badge" id="outputTrackerLiveBadge">⚡ Live Sync</span>
             </div>
 
-            <!-- Live Summary Metrics Bar -->
+            <!-- Live Summary Metrics Bar (Responsive 3-col + 2-col) -->
             <div class="tracker-summary-grid" id="trackerSummaryGrid">
               <div class="tracker-stat-box">
-                <span class="stat-label">Total Audios</span>
+                <span class="stat-label">Total</span>
                 <span class="stat-val" id="trackerStatTotal">0</span>
               </div>
               <div class="tracker-stat-box">
@@ -906,11 +926,13 @@
                 <span class="stat-label">Failed</span>
                 <span class="stat-val text-danger" id="trackerStatFailed">0</span>
               </div>
-              <div class="tracker-stat-box wide">
+            </div>
+            <div class="tracker-ratios-grid" id="trackerRatiosGrid">
+              <div class="tracker-stat-box">
                 <span class="stat-label">Voiceovers Saved</span>
                 <span class="stat-val text-success" id="trackerStatVoiceovers">0 / 0</span>
               </div>
-              <div class="tracker-stat-box wide">
+              <div class="tracker-stat-box">
                 <span class="stat-label">Captions Saved</span>
                 <span class="stat-val text-cyan" id="trackerStatCaptions">0 / 0</span>
               </div>
@@ -988,29 +1010,10 @@
             </div>
           </div>
 
-          <!-- Manual Destination Selection & Export -->
+          <!-- Direct Package Downloads (Retained relevant download controls) -->
           <div class="export-card">
-            <label class="section-label">Export Destination Folder</label>
-            <div class="input-with-action">
-              <input type="text" id="exportDestinationPath" class="studio-input" placeholder="/Users/username/Processed_Voiceovers">
-              <button id="btnBrowseExport" class="btn btn-secondary" title="Choose destination folder">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-                Browse
-              </button>
-            </div>
-
-            <div class="export-buttons-grid">
-              <button id="btnExportAll" class="btn btn-export-primary" disabled data-mode1-only="true" title="Export both processed MP3s and synchronized SRTs to folder">
-                <span>📁 Export Audio + SRTs</span>
-                <small>To destination folder</small>
-              </button>
-              <button id="btnExportSrts" class="btn btn-secondary" disabled title="Export only synchronized SRT subtitles to folder">
-                <span>📝 Export SRTs Only</span>
-                <small>V1.srt, V2.srt...</small>
-              </button>
-            </div>
-
-            <div class="export-downloads-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;">
+            <label class="section-label">Direct Package Downloads</label>
+            <div class="export-downloads-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
               <button id="btnDownloadAudioZip" class="btn btn-glass" disabled data-mode1-only="true" title="Download ZIP containing strictly processed MP3 audio files">
                 <span>🎵 Download Audio (ZIP)</span>
                 <small>Strictly MP3s</small>

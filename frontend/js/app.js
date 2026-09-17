@@ -25,6 +25,18 @@ class VoiceoverApp {
     this.checkHealth();
     this.bindEvents();
     this.updateOutputFolderUI(this.outputFolder);
+    if (this.outputFolder) {
+      fetch("/api/set-output-folder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folder_path: this.outputFolder })
+      }).then(r => r.json()).then(d => {
+        if (d.success && d.resumeInfo) {
+          this.resumeInfo = d.resumeInfo;
+          this.updateResumeUI(d.resumeInfo);
+        }
+      }).catch(e => console.warn(e));
+    }
     this.startPolling();
   }
 
@@ -80,6 +92,11 @@ class VoiceoverApp {
         const p = pathInput ? pathInput.value.trim() : "";
         if (p) this.scanFolder(p);
       });
+    }
+
+    const btnClearQueue = document.getElementById("btnClearQueueBtn");
+    if (btnClearQueue) {
+      btnClearQueue.addEventListener("click", () => this.clearQueue());
     }
 
     // 2. Browser Folder/File Upload & Dropzone
@@ -249,10 +266,14 @@ class VoiceoverApp {
       outputFolderPathBox.addEventListener("click", () => this.selectOutputFolder());
     }
 
-    // 6. Process Batch Button
+    // 6. Process Batch & Resume Batch Buttons
     const btnProcessBatch = document.getElementById("btnProcessBatch");
     if (btnProcessBatch) {
       btnProcessBatch.addEventListener("click", () => this.startBatchProcessing());
+    }
+    const btnResumeBatch = document.getElementById("btnResumeBatch");
+    if (btnResumeBatch) {
+      btnResumeBatch.addEventListener("click", () => this.resumeBatchProcessing());
     }
 
     // 7. Destination Folder Browse & Export
@@ -444,12 +465,15 @@ class VoiceoverApp {
       const data = await res.json();
       if (data.success) {
         this.files = data.files || [];
+        this.orphanScripts = data.orphanScripts || [];
         this.analytics = data.analytics || {};
         this.populateAudioDropdown();
         this.renderFileList();
+        this.renderOrphanScripts(this.orphanScripts);
         this.updateMasterV1Label();
         this.updateAnalyticsUI(this.analytics);
-        this.addLog(`Loaded ${data.count} voiceovers. V1 Master assigned.`, "success");
+        const masterName = this.files.length > 0 ? (this.files[0].vLabel || this.files[0].fileName) : "None";
+        this.addLog(`Loaded ${data.count} voiceovers (Master Reference: ${masterName}).`, "success");
         if (this.files.length > 0) {
           this.selectFile(this.files[0]);
         }
@@ -476,12 +500,19 @@ class VoiceoverApp {
       const data = await res.json();
       if (data.success) {
         this.files = data.files || [];
+        this.orphanScripts = data.orphanScripts || [];
         this.analytics = data.analytics || {};
         this.populateAudioDropdown();
         this.renderFileList();
+        this.renderOrphanScripts(this.orphanScripts);
         this.updateMasterV1Label();
         this.updateAnalyticsUI(this.analytics);
-        this.addLog(`Indexed ${data.count} voiceovers. V1 Master assigned.`, "success");
+        const masterName = this.files.length > 0 ? (this.files[0].vLabel || this.files[0].fileName) : "None";
+        if (data.count > 0) {
+          this.addLog(`Indexed ${data.count} voiceovers (Master Reference: ${masterName}).`, "success");
+        } else if (data.orphanScripts && data.orphanScripts.length > 0) {
+          this.addLog(`Indexed ${data.orphanScripts.length} scripts. Waiting for audio files...`, "info");
+        }
         if (this.files.length > 0) {
           this.selectFile(this.files[0]);
         }
@@ -490,6 +521,25 @@ class VoiceoverApp {
       }
     } catch (e) {
       this.addLog(`Upload network error: ${e.message}`, "error");
+    }
+  }
+
+  async clearQueue() {
+    try {
+      const res = await fetch("/api/clear-queue", { method: "POST" });
+      const data = await res.json();
+      if (data.success) {
+        this.files = [];
+        this.orphanScripts = [];
+        this.selectedFile = null;
+        this.renderFileList();
+        this.renderOrphanScripts([]);
+        this.populateAudioDropdown();
+        this.updateAnalyticsUI({});
+        this.addLog("File queue and unmatched scripts cleared.", "info");
+      }
+    } catch (e) {
+      this.addLog(`Clear queue error: ${e.message}`, "error");
     }
   }
 
@@ -503,7 +553,7 @@ class VoiceoverApp {
     }
 
     select.innerHTML = this.files.map(f => {
-      const tag = f.index === 1 ? "👑 " : "";
+      const tag = (f.isMaster || f.index === 1) ? "👑 " : "";
       const statusIcon = f.hasProcessed ? " [✓ Processed]" : "";
       return `<option value="${f.id}" ${this.selectedFile?.id === f.id ? 'selected' : ''}>${tag}${this.escapeHtml(f.fileName)} (${f.formattedDuration})${statusIcon}</option>`;
     }).join("");
@@ -512,7 +562,44 @@ class VoiceoverApp {
   updateMasterV1Label() {
     const masterNameEl = document.getElementById("masterFileName");
     if (masterNameEl && this.files.length > 0) {
-      masterNameEl.textContent = this.files[0].fileName;
+      masterNameEl.textContent = this.files[0].vLabel || this.files[0].fileName;
+    }
+  }
+
+  renderOrphanScripts(orphanScripts) {
+    this.orphanScripts = orphanScripts || [];
+    const card = document.getElementById("orphanScriptsCard");
+    const countBadge = document.getElementById("orphanCountBadge");
+    const list = document.getElementById("orphanScriptsList");
+    if (!card || !list) return;
+
+    if (!this.orphanScripts || this.orphanScripts.length === 0) {
+      card.style.display = "none";
+      list.innerHTML = "";
+      return;
+    }
+
+    card.style.display = "block";
+    if (countBadge) countBadge.textContent = this.orphanScripts.length;
+    list.innerHTML = "";
+
+    this.orphanScripts.forEach(s => {
+      const row = document.createElement("div");
+      row.className = "orphan-item";
+      row.innerHTML = `
+        <div class="orphan-item-info">
+          <span class="orphan-file-icon">📄</span>
+          <span class="orphan-file-name" title="${this.escapeHtml(s.filePath || s.fileName)}">${this.escapeHtml(s.fileName)}</span>
+          <span class="orphan-type-badge">${this.escapeHtml((s.scriptType || '').toUpperCase().replace('.', ''))}</span>
+        </div>
+        <span class="orphan-status-tag" title="No matching audio file found in queue">Audio not found ⚠</span>
+      `;
+      list.appendChild(row);
+    });
+
+    const btnClear = document.getElementById("btnClearQueueBtn");
+    if (btnClear) {
+      btnClear.style.display = "inline-block";
     }
   }
 
@@ -520,19 +607,41 @@ class VoiceoverApp {
     const container = document.getElementById("fileListContainer");
     const countBadge = document.getElementById("fileCountBadge");
     const durLabel = document.getElementById("queueTotalDuration") || document.getElementById("totalQueueDuration");
+    const queueHeaderEl = document.getElementById("queueHeaderTitle");
+    const btnClear = document.getElementById("btnClearQueueBtn");
 
     if (!container) return;
 
+    const matchedCount = this.files.filter(f => f.hasScript || f.hasSrt).length;
     if (countBadge) {
-      countBadge.textContent = `${this.files.length} files`;
+      if (this.files.length > 0) {
+        countBadge.textContent = `${this.files.length} Files (${matchedCount} Matched)`;
+      } else {
+        countBadge.textContent = "0 Files";
+      }
     }
+
+    if (btnClear) {
+      btnClear.style.display = (this.files.length > 0 || (this.orphanScripts && this.orphanScripts.length > 0)) ? "inline-block" : "none";
+    }
+
+    if (queueHeaderEl) {
+      if (this.files.length > 0) {
+        const firstLbl = this.files[0].vLabel || "V1";
+        const lastLbl = this.files[this.files.length - 1].vLabel || `V${this.files.length}`;
+        queueHeaderEl.textContent = `Sequenced Queue (${firstLbl} → ${lastLbl})`;
+      } else {
+        queueHeaderEl.textContent = "Sequenced Queue";
+      }
+    }
+
     container.innerHTML = "";
 
     if (this.files.length === 0) {
       container.innerHTML = `
         <div class="empty-state">
           <p>No audio files loaded yet.</p>
-          <small>Scan a directory or upload voiceovers to get started.</small>
+          <small>Scan a directory or drop voiceovers (e.g. V20.mp3) and scripts (V20 Script.txt).</small>
         </div>`;
       if (durLabel) durLabel.textContent = "Total: 00:00";
       this.renderOutputTracker([], this.analytics);
@@ -576,19 +685,19 @@ class VoiceoverApp {
         statusText = "Processing...";
       }
 
+      const vLabel = f.vLabel || (f.fileName ? f.fileName.replace(/\.[^.]+$/, '') : `V${f.index}`);
       const masterTag = (idx === 0 && this.captionMode !== "mode2")
-        ? `<span class="master-badge-v1">👑 MASTER V1</span>`
+        ? `<span class="master-badge-v1">👑 MASTER (${this.escapeHtml(vLabel)})</span>`
         : "";
 
-      let scriptBadge = "";
-      if (f.hasScript || f.hasSrt) {
-        if (f.scriptType === '.docx') {
-          scriptBadge = `<span class="srt-badge docx-badge" title="Word document script linked: ${this.escapeHtml(f.scriptFileName || '')}">📝 DOCX</span>`;
-        } else if (f.scriptType === '.srt') {
-          scriptBadge = `<span class="srt-badge" title="Matching subtitle linked: ${this.escapeHtml(f.scriptFileName || '')}">📝 SRT</span>`;
-        } else {
-          scriptBadge = `<span class="srt-badge txt-badge" title="Text script linked: ${this.escapeHtml(f.scriptFileName || '')}">📝 SCRIPT</span>`;
-        }
+      // Explicit Matching Badge
+      let matchTag = "";
+      if (f.hasScript && f.scriptFileName) {
+        matchTag = `<span class="match-tag matched" title="Matched script: ${this.escapeHtml(f.scriptFileName)}">↔ ${this.escapeHtml(f.scriptFileName)} ✓ Matched</span>`;
+      } else if (f.hasSrt && f.srtFileName) {
+        matchTag = `<span class="match-tag matched" title="Matched subtitle: ${this.escapeHtml(f.srtFileName)}">↔ ${this.escapeHtml(f.srtFileName)} ✓ Matched</span>`;
+      } else {
+        matchTag = `<span class="match-tag missing" title="Script not found for ${this.escapeHtml(f.fileName)}">Script not found ⚠</span>`;
       }
 
       // Meta row: In Mode 2, hide audio cuts
@@ -631,7 +740,7 @@ class VoiceoverApp {
             <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
               <span class="file-name">${this.escapeHtml(f.fileName)}</span>
               ${masterTag}
-              ${scriptBadge}
+              ${matchTag}
             </div>
             <div class="file-meta-row">
               ${metaDetails}
@@ -750,7 +859,7 @@ class VoiceoverApp {
       if (el) el.textContent = text;
     };
 
-    setTxt("inspectorFileName", `${file.fileName}${file.index === 1 ? ' (Master V1)' : ''}`);
+    setTxt("inspectorFileName", `${file.fileName}${file.isMaster || file.index === 1 ? ` (Master ${file.vLabel || ('V' + file.index)})` : ''}`);
     setTxt("inspectorOrigDur", file.formattedDuration || '00:00');
     
     // Processed Duration (measured from disk after processing/preview)
@@ -781,14 +890,14 @@ class VoiceoverApp {
     const scriptEl = document.getElementById("inspectorScript");
     if (scriptEl) {
       if (file.hasScript && file.scriptFileName) {
-        scriptEl.textContent = `${file.scriptFileName}`;
-        scriptEl.className = "val text-amber";
+        scriptEl.textContent = `${file.scriptFileName} ✓ Matched`;
+        scriptEl.className = "val text-success";
       } else if (file.hasSrt && file.srtFileName) {
-        scriptEl.textContent = `${file.srtFileName}`;
-        scriptEl.className = "val text-amber";
+        scriptEl.textContent = `${file.srtFileName} ✓ Matched`;
+        scriptEl.className = "val text-success";
       } else {
-        scriptEl.textContent = (this.captionMode === "mode2") ? "Missing (Required)" : "Not provided (Optional)";
-        scriptEl.className = (this.captionMode === "mode2") ? "val text-danger" : "val text-muted";
+        scriptEl.textContent = "Script not found ⚠";
+        scriptEl.className = "val text-amber";
       }
     }
 
@@ -837,8 +946,8 @@ class VoiceoverApp {
       } else if (file.hasProcessed || file.hasProcessedSrt) {
         badge.textContent = "✓ Verified";
         badge.className = "inspector-status-badge text-success";
-      } else if (file.index === 1 && this.captionMode !== "mode2") {
-        badge.textContent = "👑 Master Reference";
+      } else if ((file.isMaster || file.index === 1) && this.captionMode !== "mode2") {
+        badge.textContent = `👑 Master (${file.vLabel || ('V' + file.index)})`;
         badge.className = "inspector-status-badge text-amber";
       } else {
         badge.textContent = "Ready";
@@ -1244,6 +1353,10 @@ class VoiceoverApp {
         this.addLog(`✓ Output Destination Selected: ${data.path}`, "success");
         this.addLog(`  ├── 📁 Voiceover/ (Processed MP3s saved in real time)`, "info");
         this.addLog(`  └── 📁 Caption/ (Cut-synced SRTs saved in real time)`, "info");
+        if (data.resumeInfo) {
+          this.resumeInfo = data.resumeInfo;
+          this.updateResumeUI(data.resumeInfo);
+        }
       } else if (data.message) {
         this.addLog(data.message, "info");
       }
@@ -1295,6 +1408,84 @@ class VoiceoverApp {
       }
     } catch (e) {
       this.addLog(`Batch error: ${e.message}`, "error");
+    }
+  }
+
+  async resumeBatchProcessing() {
+    if (this.files.length === 0) {
+      this.addLog("No files in queue to resume.", "warning");
+      return;
+    }
+
+    if (!this.outputFolder) {
+      this.addLog("⚡ Please select an Output Destination Folder containing previously completed files.", "warning");
+      await this.selectOutputFolder();
+      if (!this.outputFolder) {
+        this.addLog("Resume paused: Output destination folder is required.", "warning");
+        return;
+      }
+    }
+
+    const batchSizeSelect = document.getElementById("processBatchSizeSelect");
+    const batchSize = batchSizeSelect ? parseInt(batchSizeSelect.value, 10) || 3 : 3;
+    const settings = window.AudioDSP ? window.AudioDSP.getPayload() : {};
+
+    this.addLog(`Resuming batch processing into existing folders (${this.outputFolder}/Voiceover/ & Caption/)...`, "info");
+
+    try {
+      const res = await fetch("/api/resume-batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          settings,
+          batch_size: batchSize,
+          caption_mode: this.captionMode,
+          output_folder: this.outputFolder
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (data.allCompleted) {
+          this.addLog("✓ All files are already completed and validated in the output folder.", "success");
+        } else {
+          this.isProcessing = true;
+          this.updateButtonsState();
+        }
+      } else {
+        this.addLog(`Resume notice: ${data.error}`, "error");
+      }
+    } catch (e) {
+      this.addLog(`Resume error: ${e.message}`, "error");
+    }
+  }
+
+  updateResumeUI(resumeInfo) {
+    const btnResume = document.getElementById("btnResumeBatch");
+    const btnResumeText = document.getElementById("btnResumeBatchText");
+    const btnProcess = document.getElementById("btnProcessBatch");
+    const btnProcessText = document.getElementById("btnProcessBatchText");
+    if (!btnResume) return;
+
+    const info = resumeInfo || this.resumeInfo;
+    if (!info) {
+      btnResume.style.display = "none";
+      return;
+    }
+
+    if (info.allCompleted) {
+      btnResume.style.display = "block";
+      btnResume.disabled = true;
+      if (btnResumeText) btnResumeText.textContent = "All Files Completed ✓";
+      if (btnProcessText) btnProcessText.textContent = "Re-process All Files (From Start)";
+    } else if (info.canResume) {
+      btnResume.style.display = "block";
+      btnResume.disabled = this.isProcessing;
+      const targetLabel = info.firstIncompleteLabel || `V${(info.firstIncompleteIndex || 0) + 1}`;
+      if (btnResumeText) btnResumeText.textContent = `Resume Processing (from ${targetLabel})`;
+      if (btnProcessText) btnProcessText.textContent = "Process All Voiceovers (From Start)";
+    } else {
+      btnResume.style.display = "none";
+      if (btnProcessText) btnProcessText.textContent = "Process All Voiceovers (V1, V2, ...)";
     }
   }
 
@@ -1365,6 +1556,15 @@ class VoiceoverApp {
           this.updateOutputFolderUI(data.outputFolder);
         }
 
+        if (data.orphanScripts !== undefined) {
+          const oldLen = (this.orphanScripts || []).length;
+          const newLen = (data.orphanScripts || []).length;
+          this.orphanScripts = data.orphanScripts;
+          if (oldLen !== newLen || newLen > 0) {
+            this.renderOrphanScripts(data.orphanScripts);
+          }
+        }
+
         if (data.files && data.files.length > 0) {
           this.files = data.files;
           this.renderFileList();
@@ -1377,6 +1577,11 @@ class VoiceoverApp {
               this.updateInspectorCard(updated);
             }
           }
+        }
+
+        if (data.resumeInfo) {
+          this.resumeInfo = data.resumeInfo;
+          this.updateResumeUI(data.resumeInfo);
         }
 
         if (data.analytics) {
@@ -1501,7 +1706,7 @@ class VoiceoverApp {
       // Voiceover status resolution
       let voPill = `<span class="tracker-pill pill-waiting">Waiting...</span>`;
       let voClass = "";
-      if (f.voiceoverStatus === "saved") {
+      if (f.voiceoverStatus === "saved" || f.isReused) {
         voPill = `<span class="tracker-pill pill-saved">Saved ✓</span>`;
         voClass = "is-saved";
       } else if (f.voiceoverStatus === "ready_to_save") {
@@ -1521,7 +1726,7 @@ class VoiceoverApp {
 
       // Caption status resolution
       let capPill = `<span class="tracker-pill pill-waiting">Waiting...</span>`;
-      if (f.captionStatus === "saved") {
+      if (f.captionStatus === "saved" || (f.isReused && f.hasProcessedSrt)) {
         capPill = `<span class="tracker-pill pill-saved">Saved ✓</span>`;
       } else if (f.captionStatus === "ready_to_save") {
         capPill = `<span class="tracker-pill pill-ready">Ready to Save</span>`;
@@ -1537,14 +1742,19 @@ class VoiceoverApp {
         capPill = `<span class="tracker-pill pill-skipped">Not generated</span>`;
       }
 
-      // Error message if any
-      const errorMsg = f.voiceoverError || f.captionError || (f.status === "error" && f.errorMessage ? f.errorMessage : null);
+      // Error message handling — Never render error strip on saved or completed items!
+      const isFailed = (f.voiceoverStatus === "failed" || f.captionStatus === "failed" || (f.status === "error" && f.voiceoverStatus !== "saved" && !f.isReused));
+      const rawMsg = isFailed ? (f.voiceoverError || f.captionError || (f.errorMessage || null)) : null;
       let errorStrip = "";
-      if (errorMsg && (f.voiceoverStatus === "failed" || f.captionStatus === "failed" || f.status === "error")) {
+      if (isFailed && rawMsg) {
+        let cleanMsg = rawMsg.replace(/^(Audio|SRT)\s*Error\s*—\s*[^\n]+\n?/i, "").trim();
+        if (f.fileName && cleanMsg.startsWith(`${f.fileName} ${f.fileName}`)) {
+          cleanMsg = cleanMsg.replace(`${f.fileName} ${f.fileName}`, f.fileName);
+        }
         errorStrip = `
           <div class="tracker-error-strip">
             <span class="err-lead">Error ⚠:</span>
-            <span>${this.escapeHtml(errorMsg)}</span>
+            <span>${this.escapeHtml(cleanMsg)}</span>
           </div>
         `;
       }
@@ -1670,6 +1880,11 @@ class VoiceoverApp {
     const btnBatch = document.getElementById("btnProcessBatch");
     if (btnBatch) {
       btnBatch.disabled = this.isProcessing || this.files.length === 0;
+    }
+
+    const btnResume = document.getElementById("btnResumeBatch");
+    if (btnResume) {
+      btnResume.disabled = this.isProcessing || this.files.length === 0 || (this.resumeInfo && this.resumeInfo.allCompleted);
     }
   }
 

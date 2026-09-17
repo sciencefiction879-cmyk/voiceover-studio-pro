@@ -15,6 +15,13 @@ except ImportError:
     HAS_NUMPY = False
 
 from .srt_builder import sanitize_subtitle_text, is_timestamp_token
+try:
+    from .validator import clean_script_header_metadata
+except (ImportError, ValueError):
+    try:
+        from validator import clean_script_header_metadata
+    except (ImportError, ValueError):
+        from backend.aligner.validator import clean_script_header_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +164,8 @@ class AlignerModel:
         if not text:
             return [], [], 'latin'
 
+        # Strip non-spoken metadata headers (e.g. V1, Competitor Script Word Count: 2,332)
+        text, _ = clean_script_header_metadata(text)
         clean_text = sanitize_subtitle_text(text)
         detected_script = detect_language_script(clean_text)
 

@@ -6,16 +6,16 @@ from typing import List, Dict, Any, Optional, Tuple
 
 try:
     from .aligner.engine import AlignerModel
-    from .aligner.validator import read_script_file
+    from .aligner.validator import read_script_file, clean_script_header_metadata, is_metadata_header_line
     from .aligner.srt_builder import SubtitleCue as AlignerCue, format_timestamp
 except (ImportError, ValueError):
     try:
         from aligner.engine import AlignerModel
-        from aligner.validator import read_script_file
+        from aligner.validator import read_script_file, clean_script_header_metadata, is_metadata_header_line
         from aligner.srt_builder import SubtitleCue as AlignerCue, format_timestamp
     except (ImportError, ValueError):
         from backend.aligner.engine import AlignerModel
-        from backend.aligner.validator import read_script_file
+        from backend.aligner.validator import read_script_file, clean_script_header_metadata, is_metadata_header_line
         from backend.aligner.srt_builder import SubtitleCue as AlignerCue, format_timestamp
 
 TIMESTAMP_REGEX = re.compile(r'(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})')
@@ -117,6 +117,37 @@ def parse_srt_content(content: str) -> List[SRTCue]:
 
     return cues
 
+def clean_srt_cues_header_metadata(cues: List[SRTCue]) -> Tuple[List[SRTCue], List[str]]:
+    """
+    If an imported .srt file begins with non-spoken metadata cues (e.g. 'V1', 'Competitor Script Word Count: ...'),
+    detect and strip those cues from the beginning of the cue list.
+    Re-indexes remaining cues.
+    """
+    if not cues:
+        return [], []
+
+    removed_headers: List[str] = []
+    first_spoken_idx = -1
+
+    for idx, cue in enumerate(cues):
+        cue_text = cue.text.strip()
+        lines = [l.strip() for l in cue_text.split('\n') if l.strip()]
+        if lines and all(is_metadata_header_line(line) for line in lines):
+            removed_headers.extend(lines)
+        else:
+            first_spoken_idx = idx
+            break
+
+    if first_spoken_idx == -1:
+        return [], removed_headers
+
+    valid_cues = cues[first_spoken_idx:]
+    reindexed = [
+        SRTCue(i + 1, c.start, c.end, c.text)
+        for i, c in enumerate(valid_cues)
+    ]
+    return reindexed, removed_headers
+
 
 def write_srt_file(cues: List[SRTCue], output_path: str) -> None:
     """Write list of SRTCue objects to an .srt file."""
@@ -153,9 +184,15 @@ def generate_forced_alignment_cues(audio_path: str, script_path: str, ffmpeg_bin
     Perform high-speed acoustic forced alignment from original audio + provided script (.txt, .docx, .srt).
     Returns list of aligned SRTCue objects.
     """
-    script_text = read_script_file(script_path)
-    if not script_text.strip():
+    raw_script_text = read_script_file(script_path)
+    if not raw_script_text.strip():
         raise ValueError(f"Script file '{os.path.basename(script_path)}' is empty.")
+
+    script_text, removed_headers = clean_script_header_metadata(raw_script_text)
+    if not script_text.strip():
+        raise ValueError(f"Script file '{os.path.basename(script_path)}' contains no spoken narration after header cleanup ({', '.join(removed_headers)}).")
+    if removed_headers:
+        print(f"[SRT Engine] Cleaned {len(removed_headers)} header line(s) before alignment: {', '.join(removed_headers)}")
 
     # Convert audio to standard 16k mono wav
     wav_path = convert_audio_to_wav_16k(audio_path, ffmpeg_bin=ffmpeg_bin)
@@ -371,11 +408,18 @@ def process_caption_pipeline(
       Original Audio + Script -> Forced Alignment -> Untouched Original Timeline -> Final SRT Only (No cuts, no audio alteration).
     """
     ext = os.path.splitext(script_path)[1].lower()
+    removed_headers: List[str] = []
 
     # Step 1: Acoustic forced alignment or parse pre-existing SRT
     if ext == ".srt":
-        base_cues = parse_srt_file(script_path)
+        raw_cues = parse_srt_file(script_path)
+        base_cues, removed_headers = clean_srt_cues_header_metadata(raw_cues)
     else:
+        try:
+            raw_text = read_script_file(script_path)
+            _, removed_headers = clean_script_header_metadata(raw_text)
+        except Exception:
+            removed_headers = []
         base_cues = generate_forced_alignment_cues(audio_path, script_path, ffmpeg_bin=ffmpeg_bin)
 
     if not base_cues:
@@ -416,6 +460,7 @@ def process_caption_pipeline(
         "outputSrtPath": output_srt_path,
         "initialCueCount": len(base_cues),
         "finalCueCount": len(final_cues),
+        "removedHeaders": removed_headers,
         "validation": validation,
         "cues": [c.to_srt_block() for c in final_cues]
     }
@@ -439,43 +484,180 @@ def process_srt_file(
 
 
 
-def find_matching_script(audio_path: str, search_dir: Optional[str] = None) -> Optional[str]:
+def extract_v_number(filename: str) -> Optional[int]:
+    """
+    Extract the actual V-number (integer) from an audio or script filename.
+    Accurately supports any continuous or non-continuous numbering (e.g. V20, V101, V5):
+    - 'V20.mp3' -> 20
+    - 'V20 Script.txt' -> 20
+    - 'v20_script.docx' -> 20
+    - 'V-20.srt' -> 20
+    - 'V_20.mp3' -> 20
+    - 'Voiceover 20.mp3' -> 20
+    - 'VO 20.wav' -> 20
+    - 'Script 20.txt' -> 20
+    - '20.mp3' -> 20
+    - '20 Script.txt' -> 20
+    - 'V101.mp3' -> 101
+    - 'V20_128kbps.mp3' -> 20 (avoids picking up 128 as the V-number)
+    - 'Chapter 1 - V20.mp3' -> 20 (prioritizes explicit V-prefix)
+    """
+    if not filename:
+        return None
+    
+    stem = os.path.splitext(os.path.basename(filename))[0].strip()
+
+    # Rule 1 (Highest Priority): Explicit V<num> or v<num> token
+    # Matches V20, v21, V-22, V_23, [V24], (V25), V020
+    m = re.search(r'(?:^|[_\s\b\-\[\(\.\/])[vV][\-_]?(\d+)(?:[_\s\b\-\]\)\.\/]|$)', stem)
+    if m:
+        try:
+            return int(m.group(1))
+        except (ValueError, TypeError):
+            pass
+
+    # Rule 2: Keyword prefix followed by number (e.g. "Voiceover 20", "VO 20", "Script 20", "Audio 20")
+    m = re.search(r'(?:voiceover|vo|script|audio|track|episode|ep|chapter)[_\s\b\-]+(\d+)(?:[_\s\b\-\]\)\.\/]|$)', stem, re.IGNORECASE)
+    if m:
+        try:
+            return int(m.group(1))
+        except (ValueError, TypeError):
+            pass
+
+    # Rule 3: Number followed by keyword (e.g. "20 Script", "20_VO", "20_voiceover")
+    m = re.search(r'(?:^|[_\s\b\-\[\(\.\/])(\d+)[_\s\b\-]+(?:script|voiceover|vo|audio|track)', stem, re.IGNORECASE)
+    if m:
+        try:
+            return int(m.group(1))
+        except (ValueError, TypeError):
+            pass
+
+    # Rule 4: Pure numeric stem or stem starting with digits (e.g. "20.mp3", "20_final.wav")
+    if stem.isdigit():
+        return int(stem)
+    m = re.match(r'^(\d+)(?:[_\s\b\-\.\/]|$)', stem)
+    if m:
+        try:
+            return int(m.group(1))
+        except (ValueError, TypeError):
+            pass
+
+    # Rule 5: Stem ending with digits (e.g. "Voiceover-20")
+    m = re.search(r'(?:[_\s\b\-\.\/])(\d+)$', stem)
+    if m:
+        try:
+            return int(m.group(1))
+        except (ValueError, TypeError):
+            pass
+
+    # Rule 6: Exactly one numeric token in the stem
+    all_nums = re.findall(r'\d+', stem)
+    if len(all_nums) == 1:
+        try:
+            return int(all_nums[0])
+        except (ValueError, TypeError):
+            pass
+
+    return None
+
+
+def extract_canonical_v_label(filename: str) -> str:
+    """Return canonical sequence label like 'V20' or fallback to stem."""
+    v_num = extract_v_number(filename)
+    if v_num is not None:
+        return f"V{v_num}"
+    return os.path.splitext(os.path.basename(filename))[0].strip()
+
+
+def find_matching_script(
+    audio_path: str,
+    search_dir: Optional[str] = None,
+    script_candidates: Optional[List[str]] = None
+) -> Optional[str]:
     """
     Find matching script (.txt, .docx, .srt, .text) for a given audio file.
-    Supports deterministic matching across multiple naming formats:
-    - 'V1 Script.txt' ↔ 'V1.mp3' (User Primary Format)
-    - 'V1_script.txt' ↔ 'V1.mp3'
-    - 'V1-script.txt' ↔ 'V1.mp3'
-    - 'V1.txt' ↔ 'V1.mp3'
-    - 'V1.docx' ↔ 'V1.mp3'
-    - 'V1.srt' ↔ 'V1.mp3'
+    Accurately supports arbitrary continuous or non-continuous numbering ranges:
+    - 'V20 Script.txt' ↔ 'V20.mp3'
+    - 'V20_script.docx' ↔ 'V20.mp3'
+    - 'V20.srt' ↔ 'V20.mp3'
+    - 'V101 Script.txt' ↔ 'V101.wav'
+    - '20 Script.txt' ↔ '20.mp3'
+    
+    Priority of script formats: .txt > .docx > .srt > .text.
+    Order of import does not matter.
     """
+    supported_exts = {".txt", ".docx", ".srt", ".text"}
+    ext_priority = {".txt": 0, ".docx": 1, ".srt": 2, ".text": 3}
+
+    candidates = set()
+    if script_candidates:
+        for p in script_candidates:
+            if p and os.path.exists(p) and os.path.splitext(p)[1].lower() in supported_exts:
+                candidates.add(os.path.abspath(p))
+
     search_dirs = []
     if search_dir and os.path.exists(search_dir):
-        search_dirs.append(search_dir)
+        search_dirs.append(os.path.abspath(search_dir))
     audio_dir = os.path.dirname(audio_path)
-    if audio_dir and os.path.exists(audio_dir) and audio_dir not in search_dirs:
-        search_dirs.append(audio_dir)
+    if audio_dir and os.path.exists(audio_dir):
+        norm_audio_dir = os.path.abspath(audio_dir)
+        if norm_audio_dir not in search_dirs:
+            search_dirs.append(norm_audio_dir)
 
-    # Also search uploads folder if available
+    # Search uploads folder if available
     try:
         from .server import UPLOADS_DIR
-        if UPLOADS_DIR and os.path.exists(UPLOADS_DIR) and UPLOADS_DIR not in search_dirs:
-            search_dirs.append(UPLOADS_DIR)
+        if UPLOADS_DIR and os.path.exists(UPLOADS_DIR):
+            norm_uploads = os.path.abspath(UPLOADS_DIR)
+            if norm_uploads not in search_dirs:
+                search_dirs.append(norm_uploads)
     except Exception:
         pass
 
-    if not search_dirs:
+    for sdir in search_dirs:
+        try:
+            for root, _, files in os.walk(sdir):
+                for f in files:
+                    if f.startswith("."):
+                        continue
+                    ext = os.path.splitext(f)[1].lower()
+                    if ext in supported_exts:
+                        candidates.add(os.path.abspath(os.path.join(root, f)))
+        except Exception:
+            continue
+
+    if not candidates:
         return None
 
     audio_stem = os.path.splitext(os.path.basename(audio_path))[0].strip()
     lower_stem = audio_stem.lower()
-    supported_exts = {".txt", ".docx", ".srt", ".text"}
+    audio_v = extract_v_number(audio_path)
 
-    nums = [int(n) for n in re.findall(r'\d+', audio_stem)]
-    primary_num = nums[-1] if nums else None
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Strategy 1: Match by exact V-number (User Primary Requirement)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    if audio_v is not None:
+        v_matched_candidates = []
+        for cand in candidates:
+            cand_v = extract_v_number(cand)
+            if cand_v == audio_v:
+                cand_stem = os.path.splitext(os.path.basename(cand))[0].lower()
+                cand_ext = os.path.splitext(cand)[1].lower()
+                # Preference: contains 'script' or starts with 'v'
+                has_script_word = 1 if "script" in cand_stem else 0
+                has_v_prefix = 1 if cand_stem.startswith(f"v{audio_v}") else 0
+                ext_rank = ext_priority.get(cand_ext, 99)
+                # Lower tuple values sort first
+                score = (-has_script_word, -has_v_prefix, ext_rank, len(cand_stem))
+                v_matched_candidates.append((score, cand))
 
-    # Priority 1 candidate stems: e.g. "V1 Script", "V1_script", "V1", etc.
+        if v_matched_candidates:
+            v_matched_candidates.sort(key=lambda x: x[0])
+            return v_matched_candidates[0][1]
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Strategy 2: Exact stem / Normalized stem matching
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     exact_stems = [
         f"{audio_stem} Script",
         f"{audio_stem}_script",
@@ -487,52 +669,31 @@ def find_matching_script(audio_path: str, search_dir: Optional[str] = None) -> O
         f"{lower_stem}-script",
         lower_stem,
     ]
-    if primary_num is not None:
-        exact_stems.extend([
-            f"V{primary_num} Script",
-            f"V{primary_num}_script",
-            f"V{primary_num} script",
-            f"v{primary_num} script",
-            f"V{primary_num}",
-            f"v{primary_num}",
-            f"{primary_num} Script",
-            f"{primary_num} script",
-            f"{primary_num}"
-        ])
+    cand_by_stem = {}
+    for cand in candidates:
+        c_stem = os.path.splitext(os.path.basename(cand))[0].strip()
+        cand_by_stem.setdefault(c_stem, []).append(cand)
+        cand_by_stem.setdefault(c_stem.lower(), []).append(cand)
 
-    for sdir in search_dirs:
-        # Check direct path matches in priority order (.txt, .docx, .srt, .text)
-        for s_stem in exact_stems:
-            for ext in [".txt", ".docx", ".srt", ".text"]:
-                cand = os.path.join(sdir, f"{s_stem}{ext}")
-                if os.path.exists(cand):
-                    return cand
+    for stem_pattern in exact_stems:
+        matched = cand_by_stem.get(stem_pattern) or cand_by_stem.get(stem_pattern.lower())
+        if matched:
+            matched.sort(key=lambda p: ext_priority.get(os.path.splitext(p)[1].lower(), 99))
+            return matched[0]
 
-        # Directory scan (handles case variations and spacing)
-        try:
-            entries = os.listdir(sdir)
-        except Exception:
-            continue
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Strategy 3: Normalized spacing / punctuation comparison
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    norm_audio = re.sub(r'[\s_\-]+', ' ', lower_stem).strip()
+    for cand in candidates:
+        c_stem = os.path.splitext(os.path.basename(cand))[0].strip()
+        norm_c = re.sub(r'[\s_\-]+', ' ', c_stem.lower()).strip()
+        if norm_c == f"{norm_audio} script" or norm_c == norm_audio:
+            return cand
 
-        for fname in entries:
-            fname_stem, ext = os.path.splitext(fname)
-            if ext.lower() not in supported_exts:
-                continue
-
-            clean_fname_stem = fname_stem.strip()
-            norm_fname = re.sub(r'[\s_\-]+', ' ', clean_fname_stem).strip().lower()
-            norm_audio = re.sub(r'[\s_\-]+', ' ', lower_stem).strip().lower()
-
-            if norm_fname == f"{norm_audio} script" or norm_fname == norm_audio:
-                return os.path.join(sdir, fname)
-
-            if primary_num is not None:
-                fname_nums = [int(n) for n in re.findall(r'\d+', fname_stem)]
-                if fname_nums and fname_nums[-1] == primary_num:
-                    if "script" in norm_fname or norm_fname.startswith(f"v{primary_num}") or norm_fname.startswith(f"{primary_num}"):
-                        return os.path.join(sdir, fname)
-
-    # Priority 3: Fallback to aligner.validator
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Strategy 4: Fallback to aligner.validator fuzzy matching
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     try:
         try:
             from .aligner.validator import find_best_script_match, normalize_stem, strip_common_prefixes, extract_numbers
@@ -541,25 +702,66 @@ def find_matching_script(audio_path: str, search_dir: Optional[str] = None) -> O
                 from aligner.validator import find_best_script_match, normalize_stem, strip_common_prefixes, extract_numbers
             except (ImportError, ValueError):
                 from backend.aligner.validator import find_best_script_match, normalize_stem, strip_common_prefixes, extract_numbers
-        for sdir in search_dirs:
-            entries = os.listdir(sdir)
-            script_map = {}
-            script_list = []
-            for fname in entries:
-                stem, ext = os.path.splitext(fname)
-                if ext.lower() in supported_exts:
-                    full_p = os.path.join(sdir, fname)
-                    norm = normalize_stem(stem)
-                    stripped = normalize_stem(strip_common_prefixes(stem))
-                    script_map[norm] = full_p
-                    script_map[stripped] = full_p
-                    script_list.append((stem, full_p, extract_numbers(stem), stripped))
 
-            res = find_best_script_match(audio_stem, script_map, script_list)
-            if res:
-                return res
+        script_map = {}
+        script_list = []
+        for cand in candidates:
+            c_stem = os.path.splitext(os.path.basename(cand))[0]
+            norm = normalize_stem(c_stem)
+            stripped = normalize_stem(strip_common_prefixes(c_stem))
+            script_map[norm] = cand
+            script_map[stripped] = cand
+            script_list.append((c_stem, cand, extract_numbers(c_stem), stripped))
+
+        res = find_best_script_match(audio_stem, script_map, script_list)
+        if res:
+            return res
     except Exception:
         pass
 
     return None
+
+
+def match_audio_and_script_lists(
+    audio_paths: List[str],
+    script_paths: List[str]
+) -> Tuple[Dict[str, Optional[str]], List[Dict[str, Any]]]:
+    """
+    Bi-directionally match audio paths with script paths based on V-number.
+    Returns:
+    - matches: {audio_path: matched_script_path or None}
+    - orphan_scripts: list of scripts that did not match any audio file:
+        [{'fileName': ..., 'filePath': ..., 'scriptType': ..., 'vNumber': ..., 'vLabel': ...}]
+    """
+    matches: Dict[str, Optional[str]] = {}
+    used_scripts = set()
+
+    for a_path in audio_paths:
+        matched = find_matching_script(a_path, script_candidates=script_paths)
+        if matched and matched not in used_scripts:
+            matches[a_path] = matched
+            used_scripts.add(matched)
+        else:
+            matches[a_path] = None
+
+    orphan_scripts = []
+    for s_path in script_paths:
+        if s_path not in used_scripts:
+            s_name = os.path.basename(s_path)
+            s_v = extract_v_number(s_path)
+            s_label = f"V{s_v}" if s_v is not None else os.path.splitext(s_name)[0]
+            orphan_scripts.append({
+                "fileName": s_name,
+                "filePath": s_path,
+                "scriptType": os.path.splitext(s_path)[1].lower(),
+                "vNumber": s_v,
+                "vLabel": s_label,
+                "status": "orphan",
+                "statusLabel": f"{s_name} — Audio not found ⚠"
+            })
+
+    # Sort orphan scripts by natural V-number
+    orphan_scripts.sort(key=lambda s: (s["vNumber"] if s["vNumber"] is not None else 999999, s["fileName"].lower()))
+    return matches, orphan_scripts
+
 
