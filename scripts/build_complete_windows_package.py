@@ -21,7 +21,7 @@ DIST_DIR = os.path.join(PROJECT_ROOT, "dist")
 BUILD_DIR = os.path.join(DIST_DIR, "build_win_standalone")
 ASSETS_DIR = os.path.join(PROJECT_ROOT, "assets")
 SFX_BIN = os.path.join(ASSETS_DIR, "7zS.sfx")
-VERSION = "0.4.3"
+VERSION = "0.4.4"
 
 def build():
     print("=" * 65)

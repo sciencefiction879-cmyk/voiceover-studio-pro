@@ -3207,3 +3207,288 @@ input[type="range"]::-webkit-slider-thumb:hover {
   gap: 8px;
   width: 100%;
 }
+
+/* ==========================================================================
+   Voiceover Studio Pro v0.4.4 - Light / Dark Theme & Custom Concurrency UI
+   ========================================================================== */
+
+/* Theme Toggle Button */
+.btn-header-theme {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-header-theme:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--accent-indigo);
+  transform: translateY(-1px);
+}
+
+.theme-icon {
+  font-size: 1rem;
+}
+
+/* Control Badge Number for Advanced Protection Features */
+.control-badge-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(6, 182, 212, 0.2);
+  color: var(--accent-cyan);
+  font-size: 0.72rem;
+  font-weight: 700;
+  margin-right: 6px;
+  flex-shrink: 0;
+}
+
+/* Custom Batch Concurrency Controls */
+.batch-size-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.studio-input-batch {
+  width: 68px;
+  height: 32px;
+  padding: 4px 8px;
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  font-weight: 700;
+  text-align: center;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.studio-input-batch:focus {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 0 2px var(--accent-cyan-glow);
+}
+
+.batch-unit-label {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+
+.batch-presets-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.presets-label {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.batch-preset-pills {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.batch-pill {
+  padding: 2px 8px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border-radius: var(--radius-full);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.batch-pill:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+  border-color: var(--border-focus);
+}
+
+.batch-pill.active {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.3), rgba(6, 182, 212, 0.3));
+  border-color: var(--accent-cyan);
+  color: var(--text-primary);
+  font-weight: 700;
+  box-shadow: 0 0 8px var(--accent-cyan-glow);
+}
+
+/* ==========================================================================
+   Light Mode Clean Design Theme (body.light-theme)
+   ========================================================================== */
+
+body.light-theme {
+  --bg-base: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-surface-elevated: #f1f5f9;
+  --bg-card: rgba(255, 255, 255, 0.95);
+  --bg-card-hover: #f1f5f9;
+
+  --border-subtle: rgba(15, 23, 42, 0.1);
+  --border-focus: rgba(99, 102, 241, 0.6);
+  --border-active: rgba(6, 182, 212, 0.7);
+
+  --text-primary: #0f172a;
+  --text-secondary: #334155;
+  --text-muted: #64748b;
+  --text-dim: #94a3b8;
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
+
+  background-color: #f8fafc;
+  background-image:
+    radial-gradient(circle at 15% 15%, rgba(99, 102, 241, 0.04) 0%, transparent 40%),
+    radial-gradient(circle at 85% 85%, rgba(6, 182, 212, 0.04) 0%, transparent 45%);
+  color: var(--text-primary);
+}
+
+body.light-theme .app-header {
+  background: rgba(255, 255, 255, 0.92);
+  border-bottom-color: rgba(15, 23, 42, 0.08);
+}
+
+body.light-theme .panel {
+  background: rgba(255, 255, 255, 0.9);
+  border-color: rgba(15, 23, 42, 0.08);
+}
+
+body.light-theme .panel-header {
+  background: rgba(248, 250, 252, 0.85);
+  border-bottom-color: rgba(15, 23, 42, 0.08);
+}
+
+body.light-theme .control-card,
+body.light-theme .folder-input-card,
+body.light-theme .output-folder-card,
+body.light-theme .batch-size-card,
+body.light-theme .mode-selection-card,
+body.light-theme .batch-progress-card {
+  background: #ffffff;
+  border-color: rgba(15, 23, 42, 0.1);
+  box-shadow: var(--shadow-sm);
+}
+
+body.light-theme .queue-item {
+  background: #ffffff;
+  border-color: rgba(15, 23, 42, 0.08);
+}
+
+body.light-theme .queue-item:hover {
+  background: #f8fafc;
+}
+
+body.light-theme .queue-item.active {
+  background: rgba(99, 102, 241, 0.08);
+  border-color: var(--accent-indigo);
+}
+
+body.light-theme .studio-input,
+body.light-theme .studio-select,
+body.light-theme .studio-input-sm,
+body.light-theme .studio-select-sm,
+body.light-theme .studio-input-batch {
+  background: #ffffff;
+  color: #0f172a;
+  border-color: rgba(15, 23, 42, 0.15);
+}
+
+body.light-theme .dropzone {
+  background: rgba(241, 245, 249, 0.7);
+  border-color: rgba(15, 23, 42, 0.15);
+}
+
+body.light-theme .rule-banner {
+  background: rgba(99, 102, 241, 0.07);
+  border-color: rgba(99, 102, 241, 0.25);
+  color: #1e1b4b;
+}
+
+body.light-theme .rule-banner.cyan {
+  background: rgba(6, 182, 212, 0.08);
+  border-color: rgba(6, 182, 212, 0.3);
+  color: #083344;
+}
+
+body.light-theme .rule-banner.amber {
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.3);
+  color: #451a03;
+}
+
+body.light-theme .tracker-card {
+  background: #ffffff;
+  border-color: rgba(15, 23, 42, 0.1);
+}
+
+body.light-theme .tracker-table-wrap {
+  background: #ffffff;
+  border-color: rgba(15, 23, 42, 0.08);
+}
+
+body.light-theme .tracker-table th {
+  background: #f1f5f9;
+  color: #334155;
+  border-bottom-color: rgba(15, 23, 42, 0.1);
+}
+
+body.light-theme .tracker-table td {
+  border-bottom-color: rgba(15, 23, 42, 0.06);
+  color: #0f172a;
+}
+
+body.light-theme .tracker-table tr:hover td {
+  background: #f8fafc;
+}
+
+body.light-theme .console-card {
+  background: #0f172a; /* Console maintains dark developer contrast */
+}
+
+body.light-theme .dsp-tabs-nav {
+  background: rgba(241, 245, 249, 0.9);
+  border-bottom-color: rgba(15, 23, 42, 0.1);
+}
+
+body.light-theme .dsp-tab-btn {
+  color: #475569;
+}
+
+body.light-theme .dsp-tab-btn.active {
+  background: #ffffff;
+  color: var(--accent-indigo);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+body.light-theme .btn-secondary {
+  background: #ffffff;
+  border-color: rgba(15, 23, 42, 0.15);
+  color: #1e293b;
+}
+
+body.light-theme .btn-secondary:hover {
+  background: #f8fafc;
+  border-color: var(--accent-indigo);
+}
+

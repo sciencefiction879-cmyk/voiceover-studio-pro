@@ -21,6 +21,17 @@ const DEFAULT_AUDIO_CHARACTERISTICS = {
   comp_thresh: -18.0,
   comp_ratio: 2.5,
   comp_makeup: 2.0,
+  formant_shift: 0.0,
+  haas_enabled: true,
+  haas_delay: 4.0,
+  reverb_enabled: true,
+  reverb_wet: 0.025,
+  tempo_drift_enabled: true,
+  tempo_drift_depth: 0.025,
+  saturation_enabled: true,
+  saturation_drive: 0.35,
+  noise_bed_enabled: true,
+  noise_bed_level: -62.0,
   loudnorm_enabled: true,
   loudnorm_lufs: -16.0,
   loudnorm_tp: -1.0,
@@ -182,6 +193,42 @@ class AudioDSPManager {
       setElText("limiter_ceiling_label", `${v.toFixed(2)} dBTP`);
       setElText("limiterVal", `${v.toFixed(2)} dBTP`);
       this.markManual("limiter_ceiling", v);
+    });
+
+    this.bindSlider("formant_shift", (val) => {
+      const v = parseFloat(val);
+      setElText("formant_shift_label", `${v > 0 ? '+' : ''}${v.toFixed(2)} st`);
+      this.markManual("formant_shift", v);
+    });
+
+    this.bindSlider("haas_delay", (val) => {
+      const v = parseFloat(val);
+      setElText("haas_delay_label", `${v.toFixed(2)} ms`);
+      this.markManual("haas_delay", v);
+    });
+
+    this.bindSlider("reverb_wet", (val) => {
+      const v = parseFloat(val);
+      setElText("reverb_wet_label", `${(v * 100).toFixed(1)}%`);
+      this.markManual("reverb_wet", v);
+    });
+
+    this.bindSlider("tempo_drift_depth", (val) => {
+      const v = parseFloat(val);
+      setElText("tempo_drift_depth_label", `${(v * 100).toFixed(1)}%`);
+      this.markManual("tempo_drift_depth", v);
+    });
+
+    this.bindSlider("saturation_drive", (val) => {
+      const v = parseFloat(val);
+      setElText("saturation_drive_label", `${v.toFixed(2)}`);
+      this.markManual("saturation_drive", v);
+    });
+
+    this.bindSlider("noise_bed_level", (val) => {
+      const v = parseFloat(val);
+      setElText("noise_bed_level_label", `${v.toFixed(1)} dB`);
+      this.markManual("noise_bed_level", v);
     });
 
     this.bindSlider("cut_duration_min", (val) => {
@@ -427,6 +474,17 @@ class AudioDSPManager {
       comp_thresh: getNum("comp_thresh", -18.0),
       comp_ratio: getNum("comp_ratio", 2.5),
       comp_makeup: 2.0,
+      formant_shift: getNum("formant_shift", 0.0),
+      haas_enabled: getBool("haas_enabled", true),
+      haas_delay: getNum("haas_delay", 4.0),
+      reverb_enabled: getBool("reverb_enabled", true),
+      reverb_wet: getNum("reverb_wet", 0.025),
+      tempo_drift_enabled: getBool("tempo_drift_enabled", true),
+      tempo_drift_depth: getNum("tempo_drift_depth", 0.025),
+      saturation_enabled: getBool("saturation_enabled", true),
+      saturation_drive: getNum("saturation_drive", 0.35),
+      noise_bed_enabled: getBool("noise_bed_enabled", true),
+      noise_bed_level: getNum("noise_bed_level", -62.0),
       loudnorm_enabled: getBool("loudnorm_enabled", true),
       loudnorm_lufs: getNum("loudnorm_lufs", -16.0),
       loudnorm_tp: -1.0,

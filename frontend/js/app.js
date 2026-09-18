@@ -22,6 +22,7 @@ class VoiceoverApp {
   }
 
   async init() {
+    this.initTheme();
     this.checkHealth();
     this.bindEvents();
     this.updateOutputFolderUI(this.outputFolder);
@@ -38,6 +39,30 @@ class VoiceoverApp {
       }).catch(e => console.warn(e));
     }
     this.startPolling();
+  }
+
+  initTheme() {
+    const saved = localStorage.getItem("vsp_theme") || "dark";
+    this.setTheme(saved);
+
+    const btn = document.getElementById("themeToggleBtn");
+    if (btn) {
+      btn.addEventListener("click", () => {
+        const isLight = document.body.classList.contains("light-theme");
+        this.setTheme(isLight ? "dark" : "light");
+      });
+    }
+  }
+
+  setTheme(theme) {
+    const isLight = (theme === "light");
+    document.body.classList.toggle("light-theme", isLight);
+    localStorage.setItem("vsp_theme", isLight ? "light" : "dark");
+
+    const icon = document.getElementById("themeIcon");
+    const label = document.getElementById("themeLabel");
+    if (icon) icon.textContent = isLight ? "☀️" : "🌙";
+    if (label) label.textContent = isLight ? "Light" : "Dark";
   }
 
   async checkHealth() {
@@ -62,7 +87,61 @@ class VoiceoverApp {
     }
   }
 
+  getBatchSize() {
+    const input = document.getElementById("processBatchSizeInput");
+    if (input && input.value) {
+      const val = parseInt(input.value, 10);
+      if (!isNaN(val) && val >= 1) return val;
+    }
+    const select = document.getElementById("processBatchSizeSelect");
+    if (select && select.value) {
+      const val = parseInt(select.value, 10);
+      if (!isNaN(val) && val >= 1) return val;
+    }
+    return 10;
+  }
+
   bindEvents() {
+    // 0. Batch Size Custom Input & Preset Pills
+    const batchInput = document.getElementById("processBatchSizeInput");
+    const batchPills = document.querySelectorAll(".batch-pill");
+    
+    if (batchInput) {
+      batchInput.addEventListener("input", (e) => {
+        const val = parseInt(e.target.value, 10);
+        if (val && val >= 1) {
+          batchPills.forEach(pill => {
+            pill.classList.toggle("active", parseInt(pill.dataset.size, 10) === val);
+          });
+          const hiddenSelect = document.getElementById("processBatchSizeSelect");
+          if (hiddenSelect) hiddenSelect.value = val;
+          fetch("/api/set-batch-size", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ batch_size: val })
+          }).catch(() => {});
+        }
+      });
+    }
+
+    batchPills.forEach(pill => {
+      pill.addEventListener("click", () => {
+        const size = parseInt(pill.dataset.size, 10);
+        if (size && batchInput) {
+          batchInput.value = size;
+          batchPills.forEach(p => p.classList.remove("active"));
+          pill.classList.add("active");
+          const hiddenSelect = document.getElementById("processBatchSizeSelect");
+          if (hiddenSelect) hiddenSelect.value = size;
+          fetch("/api/set-batch-size", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ batch_size: size })
+          }).catch(() => {});
+        }
+      });
+    });
+
     // 1. Source Folder Browse & Scan
     const btnBrowseSource = document.getElementById("btnBrowseSource");
     if (btnBrowseSource) {
@@ -1381,8 +1460,7 @@ class VoiceoverApp {
       }
     }
 
-    const batchSizeSelect = document.getElementById("processBatchSizeSelect");
-    const batchSize = batchSizeSelect ? parseInt(batchSizeSelect.value, 10) || 3 : 3;
+    const batchSize = this.getBatchSize();
 
     const settings = window.AudioDSP ? window.AudioDSP.getPayload() : {};
     this.addLog(`Starting real-time batch processing (${batchSize} audios at a time) for ${this.files.length} files...`, "info");
@@ -1426,8 +1504,7 @@ class VoiceoverApp {
       }
     }
 
-    const batchSizeSelect = document.getElementById("processBatchSizeSelect");
-    const batchSize = batchSizeSelect ? parseInt(batchSizeSelect.value, 10) || 3 : 3;
+    const batchSize = this.getBatchSize();
     const settings = window.AudioDSP ? window.AudioDSP.getPayload() : {};
 
     this.addLog(`Resuming batch processing into existing folders (${this.outputFolder}/Voiceover/ & Caption/)...`, "info");

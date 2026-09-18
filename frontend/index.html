@@ -26,7 +26,7 @@
         <div>
           <div style="display: flex; align-items: center; gap: 8px;">
             <h1 class="brand-title">Voiceover Studio Pro</h1>
-            <span class="version-tag">v0.4.3</span>
+            <span class="version-tag">v0.4.4</span>
           </div>
           <p class="brand-subtitle">Mode 1 (Process + Cut + SRT) &bull; Mode 2 (Alignment Only) &bull; Forced Alignment &bull; 25m+ Cuts &bull; Gemini AI</p>
         </div>
@@ -39,6 +39,12 @@
             <span class="pill-text">FFmpeg Ready</span>
           </div>
         </div>
+
+        <!-- Theme Toggle Button -->
+        <button id="themeToggleBtn" class="btn btn-secondary btn-header-theme" title="Toggle Light / Dark Theme">
+          <span class="theme-icon" id="themeIcon">🌙</span>
+          <span class="theme-label" id="themeLabel">Dark</span>
+        </button>
 
         <button id="btnOpenOutputFolder" class="btn btn-secondary btn-header-folder" title="Open chosen destination folder in Finder">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -291,6 +297,7 @@
             <button class="dsp-tab-btn" data-tab="pitch-speed">2. Pitch &amp; Speed</button>
             <button class="dsp-tab-btn" data-tab="eq-tone">3. EQ &amp; Tone</button>
             <button class="dsp-tab-btn" data-tab="dynamics">4. Dynamics &amp; Cleanup</button>
+            <button class="dsp-tab-btn" data-tab="anti-fingerprint">5. Advanced Protection (6)</button>
           </div>
 
         <div class="dsp-scroll-body">
@@ -653,6 +660,172 @@
 
           </div>
 
+          <!-- TAB 5: Advanced Anti-Fingerprint Protection (6 Features) -->
+          <div class="dsp-tab-content" id="tab-anti-fingerprint">
+            <div class="rule-banner cyan">
+              <div class="rule-icon-box">🛡️</div>
+              <div class="rule-text-box">
+                <h4>100% Anti-Fingerprint &amp; Content ID Protection</h4>
+                <p>Combines formant body shifting, stereo phase widening, room acoustics, dynamic drift, tube overtones, and sub-audible dither. All 6 vary by 3%–7% when randomized.</p>
+              </div>
+            </div>
+
+            <!-- 1. Formant Shifting -->
+            <div class="control-card">
+              <div class="control-header">
+                <div class="control-title-box">
+                  <span class="control-badge-num">1</span>
+                  <span class="control-title">Formant Shifting (Vocal Tract Resonance)</span>
+                </div>
+                <div class="control-val-actions">
+                  <span class="param-status-badge" id="badge_formant_shift">Default</span>
+                  <span class="control-val" id="formantVal">0.00 st</span>
+                  <button class="btn-dice" data-param="formant_shift" title="Randomize Formant Shift (3%–7%)">🎲</button>
+                </div>
+              </div>
+              <div class="slider-with-tags">
+                <input type="range" id="formant_shift" min="-3.0" max="3.0" value="0.0" step="0.05">
+                <div class="slider-endpoints">
+                  <span>-3.00 st (Deeper Body)</span>
+                  <span class="num-tag" id="formant_shift_label">0.00 st</span>
+                  <span>+3.00 st (Tighter Throat)</span>
+                </div>
+              </div>
+              <small class="card-hint">Shifts throat &amp; oral vocal tract formant peaks (F1 &amp; F2) without altering speech pitch.</small>
+            </div>
+
+            <!-- 2. Stereo Haas Widening -->
+            <div class="control-card toggleable">
+              <div class="control-header">
+                <label class="switch-label">
+                  <input type="checkbox" id="haas_enabled" checked>
+                  <span class="switch-slider"></span>
+                  <span class="control-badge-num">2</span>
+                  <span class="control-title">Stereo Haas Widening (Phase Dispersion)</span>
+                </label>
+                <div class="control-val-actions">
+                  <span class="param-status-badge" id="badge_haas_delay">Default</span>
+                  <span class="control-val" id="haasVal">4.00 ms</span>
+                  <button class="btn-dice" data-param="haas_delay" title="Randomize Haas Delay (3%–7%)">🎲</button>
+                </div>
+              </div>
+              <div class="slider-with-tags">
+                <input type="range" id="haas_delay" min="1.0" max="10.0" value="4.0" step="0.1">
+                <div class="slider-endpoints">
+                  <span>1.0 ms</span>
+                  <span class="num-tag" id="haas_delay_label">4.00 ms</span>
+                  <span>10.0 ms</span>
+                </div>
+              </div>
+              <small class="card-hint">Micro-channel delay produces wide 3D stereo imaging that cancels mono fingerprint summing.</small>
+            </div>
+
+            <!-- 3. Micro-Studio Reverb -->
+            <div class="control-card toggleable">
+              <div class="control-header">
+                <label class="switch-label">
+                  <input type="checkbox" id="reverb_enabled" checked>
+                  <span class="switch-slider"></span>
+                  <span class="control-badge-num">3</span>
+                  <span class="control-title">Micro-Studio Room Space (Acoustic Smear)</span>
+                </label>
+                <div class="control-val-actions">
+                  <span class="param-status-badge" id="badge_reverb_wet">Default</span>
+                  <span class="control-val" id="reverbVal">2.5%</span>
+                  <button class="btn-dice" data-param="reverb_wet" title="Randomize Micro-Reverb (3%–7%)">🎲</button>
+                </div>
+              </div>
+              <div class="slider-with-tags">
+                <input type="range" id="reverb_wet" min="0.005" max="0.080" value="0.025" step="0.005">
+                <div class="slider-endpoints">
+                  <span>0.5% (Subtle)</span>
+                  <span class="num-tag" id="reverb_wet_label">2.5%</span>
+                  <span>8.0% (Studio Room)</span>
+                </div>
+              </div>
+              <small class="card-hint">Warm studio booth acoustic reflections gently smear spectrogram peak frequencies.</small>
+            </div>
+
+            <!-- 4. Dynamic Tempo Drift -->
+            <div class="control-card toggleable">
+              <div class="control-header">
+                <label class="switch-label">
+                  <input type="checkbox" id="tempo_drift_enabled" checked>
+                  <span class="switch-slider"></span>
+                  <span class="control-badge-num">4</span>
+                  <span class="control-title">Dynamic Tempo Drift (Non-Linear Grid)</span>
+                </label>
+                <div class="control-val-actions">
+                  <span class="param-status-badge" id="badge_tempo_drift_depth">Default</span>
+                  <span class="control-val" id="tempoDriftVal">2.5%</span>
+                  <button class="btn-dice" data-param="tempo_drift_depth" title="Randomize Tempo Drift (3%–7%)">🎲</button>
+                </div>
+              </div>
+              <div class="slider-with-tags">
+                <input type="range" id="tempo_drift_depth" min="0.005" max="0.060" value="0.025" step="0.005">
+                <div class="slider-endpoints">
+                  <span>0.5% (Tight)</span>
+                  <span class="num-tag" id="tempo_drift_depth_label">2.5%</span>
+                  <span>6.0% (Organic)</span>
+                </div>
+              </div>
+              <small class="card-hint">Slow continuous micro-tempo variation prevents static grid fingerprint alignment.</small>
+            </div>
+
+            <!-- 5. Harmonic Saturation -->
+            <div class="control-card toggleable">
+              <div class="control-header">
+                <label class="switch-label">
+                  <input type="checkbox" id="saturation_enabled" checked>
+                  <span class="switch-slider"></span>
+                  <span class="control-badge-num">5</span>
+                  <span class="control-title">Harmonic Warmth Saturation (Tube Overtones)</span>
+                </label>
+                <div class="control-val-actions">
+                  <span class="param-status-badge" id="badge_saturation_drive">Default</span>
+                  <span class="control-val" id="saturationVal">0.35</span>
+                  <button class="btn-dice" data-param="saturation_drive" title="Randomize Saturation (3%–7%)">🎲</button>
+                </div>
+              </div>
+              <div class="slider-with-tags">
+                <input type="range" id="saturation_drive" min="0.05" max="0.85" value="0.35" step="0.05">
+                <div class="slider-endpoints">
+                  <span>0.05 (Clean)</span>
+                  <span class="num-tag" id="saturation_drive_label">0.35</span>
+                  <span>0.85 (Warm Tube)</span>
+                </div>
+              </div>
+              <small class="card-hint">Generates subtle analog harmonics and radio-broadcast presence absent in raw audio.</small>
+            </div>
+
+            <!-- 6. Sub-Audible Room Tone Bed -->
+            <div class="control-card toggleable">
+              <div class="control-header">
+                <label class="switch-label">
+                  <input type="checkbox" id="noise_bed_enabled" checked>
+                  <span class="switch-slider"></span>
+                  <span class="control-badge-num">6</span>
+                  <span class="control-title">Sub-Audible Room Tone Bed (Hash Jammer)</span>
+                </label>
+                <div class="control-val-actions">
+                  <span class="param-status-badge" id="badge_noise_bed_level">Default</span>
+                  <span class="control-val" id="noiseBedVal">-62.0 dB</span>
+                  <button class="btn-dice" data-param="noise_bed_level" title="Randomize Room Bed (3%–7%)">🎲</button>
+                </div>
+              </div>
+              <div class="slider-with-tags">
+                <input type="range" id="noise_bed_level" min="-75" max="-50" value="-62" step="1">
+                <div class="slider-endpoints">
+                  <span>-75 dB (Inaudible)</span>
+                  <span class="num-tag" id="noise_bed_level_label">-62.0 dB</span>
+                  <span>-50 dB (Atmosphere)</span>
+                </div>
+              </div>
+              <small class="card-hint">Inaudible pink room tone dither that destroys mathematical hashes in silent pauses.</small>
+            </div>
+
+          </div>
+
         </div>
         </div>
       </section>
@@ -816,21 +989,34 @@
             <span>Test Preview Selected File</span>
           </button>
 
-          <!-- Batch Size Selection Control -->
+          <!-- Batch Size Selection Control (Customizable Concurrency) -->
           <div class="batch-size-card" id="batchSizeCard" data-mode1-only="true">
             <div class="batch-size-header">
-              <label for="processBatchSizeSelect">Process Batch Size (Simultaneous):</label>
-              <select id="processBatchSizeSelect" class="studio-select-sm">
-                <option value="1">1 audio at a time</option>
-                <option value="2">2 audios at a time</option>
-                <option value="3" selected>3 audios at a time (Default)</option>
-                <option value="4">4 audios at a time</option>
-                <option value="5">5 audios at a time</option>
-                <option value="8">8 audios at a time</option>
-                <option value="10">10 audios at a time</option>
-              </select>
+              <label for="processBatchSizeInput">Parallel Audio Concurrency:</label>
+              <div class="batch-size-input-wrap">
+                <input type="number" id="processBatchSizeInput" class="studio-input-batch" min="1" max="200" value="10" step="1">
+                <span class="batch-unit-label">audios</span>
+              </div>
             </div>
-            <small class="batch-size-hint">Processes audios in chunks of 3 by default to optimize speed and accuracy.</small>
+            <div class="batch-presets-row">
+              <span class="presets-label">Presets:</span>
+              <div class="batch-preset-pills" id="batchPresetPills">
+                <button type="button" class="batch-pill" data-size="1">1</button>
+                <button type="button" class="batch-pill" data-size="5">5</button>
+                <button type="button" class="batch-pill active" data-size="10">10 (Default)</button>
+                <button type="button" class="batch-pill" data-size="15">15</button>
+                <button type="button" class="batch-pill" data-size="20">20</button>
+                <button type="button" class="batch-pill" data-size="30">30</button>
+              </div>
+            </div>
+            <small class="batch-size-hint">Processes 10 audios simultaneously by default. Type any custom number above for unlimited parallel processing.</small>
+            <select id="processBatchSizeSelect" style="display: none;">
+              <option value="1">1</option>
+              <option value="5">5</option>
+              <option value="10" selected>10</option>
+              <option value="15">15</option>
+              <option value="20">20</option>
+            </select>
           </div>
 
           <!-- Output Folder Selection Card (Process All Audios) -->

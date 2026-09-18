@@ -257,6 +257,12 @@ def auto_vary_params(params: Dict[str, Any], file_index: int = 0, seed: Optional
     p["comp_thresh"] = round(_vary(safe_float(p.get("comp_thresh"), -18.0), 1.0, 5.0, -30.0, -10.0), 1)
     p["comp_ratio"] = round(_vary(safe_float(p.get("comp_ratio"), 2.5), 1.0, 4.0, 1.5, 4.5), 2)
     p["limiter_ceiling"] = round(_vary(safe_float(p.get("limiter_ceiling"), -1.0), 1.0, 3.0, -2.0, -0.1), 2)
+    p["formant_shift"] = round(_vary(safe_float(p.get("formant_shift"), 0.0), 1.0, 4.0, -3.0, 3.0), 2)
+    p["haas_delay"] = round(_vary(safe_float(p.get("haas_delay"), 4.0), 1.0, 5.0, 1.0, 10.0), 2)
+    p["reverb_wet"] = round(_vary(safe_float(p.get("reverb_wet"), 0.025), 1.0, 5.0, 0.005, 0.080), 3)
+    p["tempo_drift_depth"] = round(_vary(safe_float(p.get("tempo_drift_depth"), 0.025), 1.0, 5.0, 0.005, 0.060), 3)
+    p["saturation_drive"] = round(_vary(safe_float(p.get("saturation_drive"), 0.35), 1.0, 5.0, 0.05, 0.85), 2)
+    p["noise_bed_level"] = round(_vary(safe_float(p.get("noise_bed_level"), -62.0), 1.0, 4.0, -75.0, -50.0), 1)
 
     return p
 
@@ -279,6 +285,17 @@ DEFAULT_AUDIO_CHARACTERISTICS = {
     "comp_thresh": -18.0,        # Compressor threshold dB (-30dB to -10dB)
     "comp_ratio": 2.5,           # Compression ratio (1.5:1 to 4.5:1)
     "comp_makeup": 2.0,          # Compression makeup gain dB
+    "formant_shift": 0.0,        # Vocal tract resonance shift semitones (-3.0 to +3.0)
+    "haas_enabled": True,        # Stereo Haas micro-delay widener
+    "haas_delay": 4.0,           # Haas micro-delay ms (1.0 to 10.0)
+    "reverb_enabled": True,      # Micro-room acoustic space
+    "reverb_wet": 0.025,         # Reverb wet reflection mix (0.005 to 0.080)
+    "tempo_drift_enabled": True, # Non-linear dynamic tempo/pitch drift
+    "tempo_drift_depth": 0.025,  # Tempo drift depth factor (0.005 to 0.060)
+    "saturation_enabled": True,  # Harmonic tape/tube warmth saturation
+    "saturation_drive": 0.35,    # Saturation drive amount (0.05 to 0.85)
+    "noise_bed_enabled": True,   # Sub-audible room tone bed / binaural dither
+    "noise_bed_level": -62.0,    # Noise bed level dB (-75.0 to -50.0)
     "loudnorm_enabled": True,    # EBU R128 broadcast loudness
     "loudnorm_lufs": -16.0,      # Integrated loudness LUFS (-24 to -12)
     "loudnorm_tp": -1.0,         # True peak dBTP (-2.0 to -0.1)
@@ -372,6 +389,36 @@ def randomize_characteristics_3_to_7_pct(
             "name": "Limiter Ceiling",
             "span": 1.5, "min": -2.0, "max": -0.1, "round": 2,
             "format": lambda orig, new, pct, s: f"Limiter Ceiling: {orig:.2f} dBTP → {new:.2f} dBTP ({s}{pct:.1f}%) ✓"
+        },
+        "formant_shift": {
+            "name": "Formant Shift",
+            "span": 3.0, "min": -3.0, "max": 3.0, "round": 2,
+            "format": lambda orig, new, pct, s: f"Formant Shift: {orig:+.2f} st → {new:+.2f} st ({s}{pct:.1f}%) ✓"
+        },
+        "haas_delay": {
+            "name": "Stereo Haas Delay",
+            "span": 8.0, "min": 1.0, "max": 10.0, "round": 2,
+            "format": lambda orig, new, pct, s: f"Stereo Haas Delay: {orig:.2f} ms → {new:.2f} ms ({s}{pct:.1f}%) ✓"
+        },
+        "reverb_wet": {
+            "name": "Micro-Reverb Wet",
+            "span": 0.06, "min": 0.005, "max": 0.080, "round": 3,
+            "format": lambda orig, new, pct, s: f"Micro-Reverb Wet: {orig*100:.1f}% → {new*100:.1f}% ({s}{pct:.1f}%) ✓"
+        },
+        "tempo_drift_depth": {
+            "name": "Dynamic Tempo Drift",
+            "span": 0.04, "min": 0.005, "max": 0.060, "round": 3,
+            "format": lambda orig, new, pct, s: f"Dynamic Tempo Drift: {orig*100:.1f}% → {new*100:.1f}% ({s}{pct:.1f}%) ✓"
+        },
+        "saturation_drive": {
+            "name": "Harmonic Saturation",
+            "span": 0.60, "min": 0.05, "max": 0.85, "round": 2,
+            "format": lambda orig, new, pct, s: f"Harmonic Saturation: {orig:.2f} → {new:.2f} ({s}{pct:.1f}%) ✓"
+        },
+        "noise_bed_level": {
+            "name": "Sub-Audible Room Bed",
+            "span": 25.0, "min": -75.0, "max": -50.0, "round": 1,
+            "format": lambda orig, new, pct, s: f"Sub-Audible Room Bed: {orig:.1f} dB → {new:.1f} dB ({s}{pct:.1f}%) ✓"
         },
     }
 
@@ -472,6 +519,23 @@ def resolve_dsp_params(user_settings: Optional[Dict[str, Any]], file_index: int 
     limiter_enabled = safe_bool(user_settings.get("limiter_enabled"), True)
     limiter_ceiling = pick_param("limiter_ceiling", "limiter_min", "limiter_max", -1.0)
 
+    formant_shift = pick_param("formant_shift", "formant_min", "formant_max", 0.0)
+
+    haas_enabled = safe_bool(user_settings.get("haas_enabled"), True)
+    haas_delay = pick_param("haas_delay", "haas_delay_min", "haas_delay_max", 4.0)
+
+    reverb_enabled = safe_bool(user_settings.get("reverb_enabled"), True)
+    reverb_wet = pick_param("reverb_wet", "reverb_wet_min", "reverb_wet_max", 0.025)
+
+    tempo_drift_enabled = safe_bool(user_settings.get("tempo_drift_enabled"), True)
+    tempo_drift_depth = pick_param("tempo_drift_depth", "tempo_drift_min", "tempo_drift_max", 0.025)
+
+    saturation_enabled = safe_bool(user_settings.get("saturation_enabled"), True)
+    saturation_drive = pick_param("saturation_drive", "saturation_min", "saturation_max", 0.35)
+
+    noise_bed_enabled = safe_bool(user_settings.get("noise_bed_enabled"), True)
+    noise_bed_level = pick_param("noise_bed_level", "noise_bed_min", "noise_bed_max", -62.0)
+
     cut_duration_min = safe_float(user_settings.get("cut_duration_min"), 50.0)
     cut_duration_max = safe_float(user_settings.get("cut_duration_max"), 70.0)
 
@@ -492,6 +556,17 @@ def resolve_dsp_params(user_settings: Optional[Dict[str, Any]], file_index: int 
         "comp_thresh": round(comp_thresh, 1),
         "comp_ratio": round(comp_ratio, 2),
         "comp_makeup": round(comp_makeup, 1),
+        "formant_shift": round(formant_shift, 2),
+        "haas_enabled": haas_enabled,
+        "haas_delay": round(haas_delay, 2),
+        "reverb_enabled": reverb_enabled,
+        "reverb_wet": round(reverb_wet, 3),
+        "tempo_drift_enabled": tempo_drift_enabled,
+        "tempo_drift_depth": round(tempo_drift_depth, 3),
+        "saturation_enabled": saturation_enabled,
+        "saturation_drive": round(saturation_drive, 2),
+        "noise_bed_enabled": noise_bed_enabled,
+        "noise_bed_level": round(noise_bed_level, 1),
         "loudnorm_enabled": loudnorm_enabled,
         "loudnorm_lufs": round(loudnorm_lufs, 1),
         "loudnorm_tp": round(loudnorm_tp, 1),
@@ -543,19 +618,53 @@ def build_dsp_filter_chain(params: Dict[str, Any]) -> str:
     if abs(treble) > 0.05:
         filters.append(f"equalizer=f=11000:width_type=o:w=1.2:g={treble:.2f}")
 
-    # 5. Lowpass smoothing
+    # 5. Formant Vocal Tract Resonance Shifting (F1 throat ~600Hz, F2 oral cavity ~2000Hz)
+    formant = safe_float(params.get("formant_shift"), 0.0)
+    if abs(formant) > 0.03:
+        f1_gain = round(formant * 1.2, 2)
+        f2_gain = round(-formant * 1.0, 2)
+        filters.append(f"equalizer=f=600:width_type=o:w=1.1:g={f1_gain:.2f}")
+        filters.append(f"equalizer=f=2000:width_type=o:w=1.3:g={f2_gain:.2f}")
+
+    # 6. Lowpass smoothing
     lp = safe_float(params.get("lowpass_freq"), 18500.0)
     if lp < 20000:
         filters.append(f"lowpass=f={lp:.1f}:w=0.7")
 
-    # 6. Gentle vocal compressor
+    # 7. Gentle vocal compressor
     if safe_bool(params.get("comp_enabled"), True):
         thresh = safe_float(params.get("comp_thresh"), -18.0)
         ratio = safe_float(params.get("comp_ratio"), 2.5)
         makeup = safe_float(params.get("comp_makeup"), 2.0)
         filters.append(f"acompressor=threshold={thresh:.1f}dB:ratio={ratio:.2f}:attack=15:release=120:makeup={makeup:.1f}dB")
 
-    # 7. Pitch and Tempo / Speed variation
+    # 8. Harmonic Saturation / Tube Warmth Overtones
+    if safe_bool(params.get("saturation_enabled"), True):
+        drive = safe_float(params.get("saturation_drive"), 0.35)
+        if drive > 0.05:
+            filters.append(f"asoftclip=type=tanh:param={drive:.2f}")
+
+    # 9. Micro-Reverb / Spatial Acoustic Room Response
+    if safe_bool(params.get("reverb_enabled"), True):
+        wet = safe_float(params.get("reverb_wet"), 0.025)
+        if wet > 0.003:
+            wet2 = max(0.001, round(wet * 0.6, 4))
+            filters.append(f"aecho=0.8:0.88:20|35:{wet:.4f}|{wet2:.4f}")
+
+    # 10. Stereo Haas Micro-Delay Widening (Phase anti-fingerprint)
+    if safe_bool(params.get("haas_enabled"), True):
+        delay = safe_float(params.get("haas_delay"), 4.0)
+        if delay > 0.2:
+            right_delay = max(0.5, delay * 0.4)
+            filters.append(f"haas=level_in=1:level_out=1:side_gain=1:left_delay={delay:.1f}:right_delay={right_delay:.1f}")
+
+    # 11. Dynamic Non-Linear Tempo / Pitch Drift (anti-static grid)
+    if safe_bool(params.get("tempo_drift_enabled"), True):
+        drift = safe_float(params.get("tempo_drift_depth"), 0.025)
+        if drift > 0.004:
+            filters.append(f"vibrato=f=0.2:d={drift:.3f}")
+
+    # 12. Pitch and Tempo / Speed variation
     semitones = safe_float(params.get("pitch_semitones"), 0.0)
     speed = safe_float(params.get("speed_factor"), 1.0)
     pitch_factor = 2.0 ** (semitones / 12.0)
@@ -575,18 +684,18 @@ def build_dsp_filter_chain(params: Dict[str, Any]) -> str:
         atempo_str = ",".join(atempo_filters)
         filters.append(f"asetrate=44100*{pitch_factor:.6f},aresample=44100,{atempo_str}")
 
-    # 8. Volume / Gain adjustment
+    # 13. Volume / Gain adjustment
     vol = safe_float(params.get("volume_db"), 0.0)
     if abs(vol) > 0.05:
         filters.append(f"volume={vol:.2f}dB")
 
-    # 9. EBU R128 Loudness Normalization
+    # 14. EBU R128 Loudness Normalization
     if safe_bool(params.get("loudnorm_enabled"), True):
         lufs = safe_float(params.get("loudnorm_lufs"), -16.0)
         tp = safe_float(params.get("loudnorm_tp"), -1.0)
         filters.append(f"loudnorm=I={lufs:.1f}:TP={tp:.1f}:LRA=9:dual_mono=true")
 
-    # 10. Peak Limiter (brickwall limiter)
+    # 15. Peak Limiter (brickwall limiter)
     if safe_bool(params.get("limiter_enabled"), True):
         ceiling = safe_float(params.get("limiter_ceiling"), -1.0)
         filters.append(f"alimiter=limit={ceiling:.2f}dB:level=true:attack=5:release=50:asc=true")
@@ -710,8 +819,15 @@ def process_voiceover(
     if preview_mode:
         cmd.extend(["-t", str(preview_duration)])
 
+    noise_bed_enabled = safe_bool(params.get("noise_bed_enabled"), True)
+    noise_bed_level = safe_float(params.get("noise_bed_level"), -62.0)
+    noise_amp = max(0.00001, min(0.01, 10.0 ** (noise_bed_level / 20.0))) if noise_bed_enabled else 0.0
+
     if len(keep_segs) <= 1:
-        filter_complex = f"[0:a]{dsp_chain}[outa]"
+        if noise_bed_enabled:
+            filter_complex = f"[0:a]{dsp_chain}[pre];anoisesrc=c=pink:r=44100:a={noise_amp:.6f}[noise];[pre][noise]amix=inputs=2:duration=first:normalize=0[outa]"
+        else:
+            filter_complex = f"[0:a]{dsp_chain}[outa]"
     else:
         filter_parts = []
         concat_inputs = []
@@ -738,7 +854,12 @@ def process_voiceover(
         concat_str = "".join(concat_inputs)
         num_segs = len(keep_segs)
         filter_parts.append(f"{concat_str}concat=n={num_segs}:v=0:a=1[joined]")
-        filter_parts.append(f"[joined]{dsp_chain}[outa]")
+        if noise_bed_enabled:
+            filter_parts.append(f"[joined]{dsp_chain}[pre]")
+            filter_parts.append(f"anoisesrc=c=pink:r=44100:a={noise_amp:.6f}[noise]")
+            filter_parts.append(f"[pre][noise]amix=inputs=2:duration=first:normalize=0[outa]")
+        else:
+            filter_parts.append(f"[joined]{dsp_chain}[outa]")
         filter_complex = ";".join(filter_parts)
 
     out_ext = os.path.splitext(output_path)[1].lower()

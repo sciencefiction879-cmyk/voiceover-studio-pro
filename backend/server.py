@@ -42,7 +42,7 @@ from srt_engine import (
 )
 from gemini_engine import KEY_MANAGER, analyze_audio_with_gemini
 
-APP_VERSION = "0.4.3"
+APP_VERSION = "0.4.4"
 from error_diagnostics import (
     diagnose_audio_error,
     diagnose_script_error,
@@ -131,7 +131,7 @@ STATE = {
     "current_batch": 0,        # Current chunk index (1-based)
     "total_batches": 0,        # Total chunks count
     "active_batch_files": [],  # List of filenames currently in active batch
-    "batch_size": 3,           # Default batch chunk size: 3
+    "batch_size": 10,          # Default batch chunk size: 10
     "progress": 0,             # 0 to 100
     "caption_mode": "mode1",   # "mode1" (Process + Cut + SRT) or "mode2" (Alignment Only)
     "logs": [],                # System logs
@@ -300,7 +300,7 @@ def update_analytics():
         "currentBatch": STATE.get("current_batch", 0),
         "totalBatches": STATE.get("total_batches", 0),
         "activeBatchFiles": STATE.get("active_batch_files", []),
-        "batchSize": STATE.get("batch_size", 3),
+        "batchSize": STATE.get("batch_size", 10),
         "captionMode": mode,
         "totalOriginalSecs": round(orig_secs, 2),
         "formattedTotalOriginal": format_human_duration(orig_secs),
@@ -429,7 +429,7 @@ def save_session_state():
             "output_folder": STATE.get("output_folder"),
             "output_subfolders": STATE.get("output_subfolders", {}),
             "caption_mode": STATE.get("caption_mode", "mode1"),
-            "batch_size": STATE.get("batch_size", 3),
+            "batch_size": STATE.get("batch_size", 10),
             "settings": STATE.get("settings", {}),
             "master_v1_settings": STATE.get("master_v1_settings", {}),
             "is_processing": STATE.get("is_processing", False),
@@ -443,10 +443,11 @@ def save_session_state():
         os.replace(temp_file, SESSION_FILE)
     except Exception as e:
         print(f"Notice: Failed to persist session state: {e}")
+    return False
 
 
 def load_session_state() -> bool:
-    """Load session state from disk if available."""
+    """Load previously persisted session data to preserve user progress."""
     if not os.path.exists(SESSION_FILE):
         return False
     try:
@@ -465,7 +466,7 @@ def load_session_state() -> bool:
             if data.get("caption_mode"):
                 STATE["caption_mode"] = data["caption_mode"]
             if data.get("batch_size"):
-                STATE["batch_size"] = data["batch_size"]
+                STATE["batch_size"] = max(1, safe_int(data["batch_size"], 10))
             if data.get("master_v1_settings"):
                 STATE["master_v1_settings"] = data["master_v1_settings"]
             
@@ -1679,7 +1680,7 @@ def _execute_batch_process(data: Dict[str, Any]):
 
     settings = data.get("settings") or STATE.get("master_v1_settings") or {}
     file_ids = data.get("file_ids", [])
-    batch_size = max(1, min(20, safe_int(data.get("batch_size"), 3)))
+    batch_size = max(1, safe_int(data.get("batch_size"), STATE.get("batch_size", 10)))
     resume_only = data.get("resume_only", False)
 
     if not STATE["files"]:
@@ -2095,6 +2096,17 @@ def set_caption_mode():
     return jsonify({"success": True, "captionMode": mode})
 
 
+@app.route("/api/set-batch-size", methods=["POST"])
+def set_batch_size():
+    """Update active concurrent batch processing size."""
+    data = request.get_json() or {}
+    val = max(1, safe_int(data.get("batch_size"), 10))
+    STATE["batch_size"] = val
+    save_session_state()
+    add_log(f"Simultaneous process batch size set to: {val} audios at a time", "info")
+    return jsonify({"success": True, "batchSize": val})
+
+
 @app.route("/api/status", methods=["GET"])
 def get_status():
     """Poll processing status, progress, logs, analytics, active batch files, updated file states, and resume information."""
@@ -2112,7 +2124,7 @@ def get_status():
         "currentBatch": STATE.get("current_batch", 0),
         "totalBatches": STATE.get("total_batches", 0),
         "activeBatchFiles": STATE.get("active_batch_files", []),
-        "batchSize": STATE.get("batch_size", 3),
+        "batchSize": STATE.get("batch_size", 10),
         "captionMode": STATE.get("caption_mode", "mode1"),
         "progress": STATE["progress"],
         "logs": STATE["logs"][-60:],
